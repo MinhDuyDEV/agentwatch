@@ -34,6 +34,13 @@ public static partial class SupportCheck
         echo "@@end@@"
         """;
 
+    // A fresh one-time launch link of the dashboard that is already running.
+    const string LaunchLink = """
+        PATH="$(dirname "$1"):$PATH"
+        echo "@@launch@@"; piagent dashboard open --no-open --json 2>/dev/null | tail -n 1
+        echo "@@end@@"
+        """;
+
     [GeneratedRegex(@"^http://127\.0\.0\.1:\d{1,5}$")]
     private static partial Regex Loopback();
 
@@ -83,17 +90,18 @@ public static partial class SupportCheck
     // a line of the report. `progress` hears each line as it is known, so a
     // report written along the way shows the last step reached.
     public static async Task<IReadOnlyList<SupportLine>> RunAsync(StudioProfileStore profiles, IStudioKeyStore keys, StudioClient client, IWsl wsl,
-        string? distro, string brokerPath, Func<Uri, Task<int>>? probe = null, Action<IReadOnlyList<SupportLine>>? progress = null)
+        string? distro, string brokerPath, Func<Uri, Task<int>>? probe = null, Action<IReadOnlyList<SupportLine>>? progress = null,
+        Func<string, string, Task<IReadOnlyList<DashboardProbe.Result>>>? page = null)
     {
         var lines = new List<SupportLine>();
         void Add(string area, SupportState state, string label, string detail = "") { lines.Add(new(area, state, label, detail)); progress?.Invoke(lines); }
-        try { await CollectAsync(Add, profiles, keys, client, wsl, distro, brokerPath, probe); }
+        try { await CollectAsync(Add, profiles, keys, client, wsl, distro, brokerPath, probe, page); }
         catch (Exception error) { Add(lines.LastOrDefault()?.Area ?? AgentWatch, SupportState.failed, "Kiểm tra dừng giữa chừng", Explain(error)); }
         return lines;
     }
 
     static async Task CollectAsync(Action<string, SupportState, string, string> add, StudioProfileStore profiles, IStudioKeyStore keys, StudioClient client, IWsl wsl,
-        string? distro, string brokerPath, Func<Uri, Task<int>>? probe)
+        string? distro, string brokerPath, Func<Uri, Task<int>>? probe, Func<string, string, Task<IReadOnlyList<DashboardProbe.Result>>>? page)
     {
         void Add(string area, SupportState state, string label, string detail = "") => add(area, state, label, detail);
         async Task<bool> Step(string area, string label, Func<Task<string>> run)
@@ -200,6 +208,15 @@ public static partial class SupportCheck
             }
             catch (Exception error) when (error is HttpRequestException or TaskCanceledException or IOException)
             { Add(Piagent, SupportState.failed, "Windows mở được trang dashboard", "Windows không tới được cổng của WSL: chạy `wsl --shutdown` trong PowerShell rồi mở lại Piagent."); }
+            // What the open page asks the dashboard for, asked from Windows as the browser does.
+            try
+            {
+                var link = Text(Json(Section(await wsl.RunAsync(found.Distro, null, "bash", "-lic", LaunchLink.ReplaceLineEndings("\n"), "agentwatch-support", found.Node), "launch")), "launchUrl");
+                if (DashboardProbe.Parse(link) is not { } launch || launch.Origin != origin) Add(Piagent, SupportState.failed, "Mở trang như trình duyệt", "Dashboard không cấp link mở trang: trong Ubuntu chạy `piagent dashboard restart`.");
+                else foreach (var result in await (page ?? ((from, capability) => DashboardProbe.RunAsync(from, capability)))(launch.Origin, launch.Capability))
+                    Add(Piagent, result.Ok ? SupportState.ok : SupportState.failed, result.Label, result.Detail);
+            }
+            catch (Exception error) { Add(Piagent, SupportState.failed, "Mở trang như trình duyệt", Explain(error)); }
         }
 
         var doctor = Json(Section(facts, "doctor"));
