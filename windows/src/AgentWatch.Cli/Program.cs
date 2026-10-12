@@ -73,11 +73,19 @@ try
             stdout.WriteLine("Sẵn sàng nối với key công ty (agentwatch bind-wsl).");
             return 0;
         }
+        case "check-log" when rest.Length == 0 || (rest.Length == 2 && rest[0] == "--distro" && !string.IsNullOrWhiteSpace(rest[1])):
+        {
+            // Which leg fails: this app, the route to Studio, or Piagent in WSL. Changes nothing.
+            var distro = rest.Length == 2 ? rest[1] : PiagentWslBinding.Remembered();
+            var lines = await SupportCheck.RunAsync(profiles, keys, new StudioClient(), new WslExe(), distro, Environment.ProcessPath!);
+            stdout.WriteLine(SupportCheck.Format(lines, DateTimeOffset.Now));
+            return lines.Any(line => line.State == SupportState.failed) ? 1 : 0;
+        }
         case "--version":
             stdout.WriteLine(StudioClient.UserAgent);
             return 0;
         default:
-            stderr.WriteLine("agentwatch connect \"<mã kết nối>\"|- | status | disconnect | bind-wsl [--distro <tên>] | check-wsl [--distro <tên>] | credential --profile <id> | managed-broker --profile <id> | managed-authorize --profile <id>");
+            stderr.WriteLine("agentwatch connect \"<mã kết nối>\"|- | status | disconnect | bind-wsl [--distro <tên>] | check-wsl [--distro <tên>] | check-log [--distro <tên>] | credential --profile <id> | managed-broker --profile <id> | managed-authorize --profile <id>");
             return 64;
     }
 }

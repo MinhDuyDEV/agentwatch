@@ -107,8 +107,9 @@ public partial class MainWindow : Window
         LaunchButton.IsEnabled = ready && !busy;
     }
 
+    // The number of granted models only: which ones is Studio's to show.
     static string ModelSummary(StudioConnection? connection) => connection?.Models is { } models
-        ? models.Length == 0 ? "Studio chưa cấp model nào." : string.Join(" · ", models.Select(m => m.DisplayName))
+        ? models.Length == 0 ? "Studio chưa cấp model nào." : $"Studio đã cấp {models.Length} model cho key này."
         : "Chưa tải được danh sách model; kiểm tra lại kết nối.";
 
     async Task RunAsync(string message, Func<Task> action)
@@ -292,7 +293,19 @@ public partial class MainWindow : Window
         });
     }
     void CopySetup(object sender, RoutedEventArgs e) => Copy(SetupCommand, "Đã sao chép. Chạy lệnh trong PowerShell rồi quay lại kiểm tra WSL.");
-    void CopyDiagnostics(object sender, RoutedEventArgs e) => Copy(DiagnosticsSummary.Text, "Đã sao chép thông tin hỗ trợ, không kèm key hoặc nội dung hội thoại.");
+    void CopyDiagnostics(object sender, RoutedEventArgs e) => Copy(DiagnosticsSummary.Text + (SupportReport.Text.Length > 0 ? "\n\n" + SupportReport.Text : ""),
+        "Đã sao chép thông tin hỗ trợ, không kèm key, tên model hoặc nội dung hội thoại.");
+    // Agent Watch, the route to Studio, then Piagent and its dashboard in WSL:
+    // every leg is checked even after one fails. Nothing is changed.
+    async void CheckLog(object sender, RoutedEventArgs e) => await RunAsync("Đang kiểm tra Agent Watch, Studio và Piagent… (có thể mất 1–2 phút)", async () =>
+    {
+        SupportCard.Visibility = Visibility.Visible;
+        SupportReport.Text = "Đang kiểm tra…";
+        var distro = ready ? checkedDistro : PiagentWslBinding.Remembered();
+        var lines = await SupportCheck.RunAsync(profiles, keys, new StudioClient(), new WslExe(), distro, Broker);
+        SupportReport.Text = SupportCheck.Format(lines, DateTimeOffset.Now);
+        Status.Text = lines.Any(line => line.State == SupportState.failed) ? "Đã kiểm tra: có bước lỗi, xem kết quả bên dưới." : "Đã kiểm tra: không thấy lỗi ở cả ba chặng.";
+    });
     void Copy(string value, string success)
     {
         try { Clipboard.SetText(value); Status.Text = success; }

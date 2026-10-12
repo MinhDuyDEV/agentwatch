@@ -35,6 +35,7 @@ Mở **Piagent** từ Start menu: một cửa sổ Ubuntu mở dashboard trong t
 | Lệnh đòi khởi động lại mãi, hoặc Ubuntu báo `0x80370114` | Windows ghi đã bật *Virtual Machine Platform* nhưng thiếu dịch vụ máy ảo. Kiểm tra `Test-Path C:\Windows\System32\vmcompute.exe`; nếu ra `False`, trong PowerShell *Run as administrator* chạy `DISM /Online /Cleanup-Image /RestoreHealth`, `sfc /scannow`, rồi tắt và bật lại tính năng (mỗi lần Restart): `dism.exe /online /disable-feature /featurename:VirtualMachinePlatform /norestart`, `dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart`. Vẫn thiếu: cài đè Windows 11 bằng Installation Assistant, chọn giữ file và ứng dụng. |
 | `0x80370102` hoặc lỗi ảo hoá | Bật Virtualization (Intel VT-x / AMD SVM) trong BIOS. |
 | Tải Ubuntu lỗi mạng | `wsl --install -d Ubuntu --web-download`, rồi chạy lại lệnh cài. |
+| Dashboard mở nhưng cứ quay “Đang mở Piagent…”, hoặc không rõ lỗi ở đâu | Trong Agent Watch mở **Chẩn đoán → Kiểm tra log**, rồi **Sao chép thông tin hỗ trợ** gửi cho quản trị viên. |
 | Dashboard báo Agent Watch hoặc Piagent vừa cập nhật | Chạy lại lệnh cài (hoặc trong Agent Watch bấm **Kiểm tra WSL** rồi **Áp dụng**). |
 
 Kiểm tra máy: trong Ubuntu chạy `piagent studio --doctor`. Cài từng bước bằng tay: xem [Piagent trên Windows](https://github.com/Vt-mmm/piagent/blob/main/docs/vi/windows.md).
@@ -53,6 +54,7 @@ Piagent dùng tài khoản AI của riêng bạn cũng chạy trong Ubuntu: ch�
 | `agentwatch status` | Các kết nối đã lưu |
 | `agentwatch bind-wsl [--distro Ubuntu]` | Cho Piagent trong WSL dùng key công ty |
 | `agentwatch check-wsl [--distro Ubuntu]` | Kiểm tra Piagent trong WSL (user, Node, bản Pi) mà không cần key |
+| `agentwatch check-log [--distro Ubuntu]` | Kiểm tra log: lỗi nằm ở Agent Watch, đường tới Studio hay Piagent trong WSL (như nút **Kiểm tra log** ở trang Chẩn đoán); không hiện key hay tên model |
 | `agentwatch disconnect` | Ngắt kết nối, xoá key khỏi máy |
 
 Chỉ cài hoặc cập nhật Agent Watch (không đụng tới Ubuntu): `irm https://raw.githubusercontent.com/Vt-mmm/agentwatch/main/windows/install.ps1 | iex`.
