@@ -41,6 +41,37 @@ public static partial class SupportCheck
         echo "@@end@@"
         """;
 
+    // What the dashboard and the company Gateway are doing while the page waits:
+    // 16 samples in 8 seconds of each main thread's state (S sleeping, R
+    // running, D blocked on a disk or a file system) and the system call it
+    // is in, with the file when the call reads one; then its children, its
+    // folder and its open files. Read from /proc as the member; nothing is traced.
+    const string ProcessFacts = """
+        machine=$(uname -m)
+        for p in $(pgrep -f 'piagent-(studio|dashboard)\.mjs'); do (
+          kind=$(tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null | grep -oE 'piagent-(studio|dashboard)\.mjs' | head -n 1)
+          [ -n "$kind" ] || exit 0
+          seen=$(i=0; while [ $i -lt 16 ]; do
+            s=$(cat /proc/$p/syscall 2>/dev/null) || break
+            n=${s%% *}; a=$(printf %s "$s" | cut -d ' ' -f 2); what="syscall $n"; on=
+            case "$n" in running) what=running;; -1) what=no-syscall;; esac
+            [ "$machine" = x86_64 ] && case "$n" in
+              0) what=read; on=fd;; 1) what=write; on=fd;; 17) what=pread; on=fd;; 5) what=fstat; on=fd;; 217) what=getdents; on=fd;; 74|75) what=fsync; on=fd;;
+              7|271) what=poll;; 232|281) what=epoll_wait;; 202) what=futex;; 257|437) what=openat;; 262|332|4|6) what=stat;; 89|267) what=readlink;;
+              61|247) what=wait-child;; 59|322) what=execve;; 56|57|58|435) what=fork;; 3) what=close;; 35|230) what=sleep;;
+            esac
+            [ -n "$on" ] && what="$what $(readlink /proc/$p/fd/$((a)) 2>/dev/null)"
+            echo "$(ps -o stat= -p $p | cut -c1) $what"
+            i=$((i+1)); sleep 0.5
+          done | sort | uniq -c | sort -rn | head -n 6 | sed 's/^ *//' | tr '\n' ',')
+          kids=$(ps --ppid $p -o stat=,etimes=,args= 2>/dev/null | cut -c1-110 | head -n 5 | tr '\n' ',')
+          files=$(ls -l /proc/$p/fd 2>/dev/null | sed -n 's/.* -> //p' | grep -vE '^(socket|pipe|anon_inode)|^/dev/' | sort | uniq -c | sort -rn | head -n 6 | sed 's/^ *//' | tr '\n' ',')
+          echo "@@process@@$kind|pid $p, chạy $(ps -o etimes= -p $p | tr -d ' ')s, CPU $(ps -o pcpu= -p $p | tr -d ' ')%|$seen|$kids|$(readlink /proc/$p/cwd)|$files"
+        ) & done
+        wait
+        echo "@@end@@"
+        """;
+
     [GeneratedRegex(@"^http://127\.0\.0\.1:\d{1,5}$")]
     private static partial Regex Loopback();
 
@@ -208,15 +239,39 @@ public static partial class SupportCheck
             }
             catch (Exception error) when (error is HttpRequestException or TaskCanceledException or IOException)
             { Add(Piagent, SupportState.failed, "Windows mở được trang dashboard", "Windows không tới được cổng của WSL: chạy `wsl --shutdown` trong PowerShell rồi mở lại Piagent."); }
-            // What the open page asks the dashboard for, asked from Windows as the browser does.
+            // What the open page asks the dashboard for, asked from Windows as the browser does;
+            // the processes are sampled meanwhile, so a read that hangs is caught as it hangs.
+            Task<string>? sampling = null;
             try
             {
                 var link = Text(Json(Section(await wsl.RunAsync(found.Distro, null, "bash", "-lic", LaunchLink.ReplaceLineEndings("\n"), "agentwatch-support", found.Node), "launch")), "launchUrl");
                 if (DashboardProbe.Parse(link) is not { } launch || launch.Origin != origin) Add(Piagent, SupportState.failed, "Mở trang như trình duyệt", "Dashboard không cấp link mở trang: trong Ubuntu chạy `piagent dashboard restart`.");
-                else foreach (var result in await (page ?? ((from, capability) => DashboardProbe.RunAsync(from, capability)))(launch.Origin, launch.Capability))
-                    Add(Piagent, result.Ok ? SupportState.ok : SupportState.failed, result.Label, result.Detail);
+                else
+                {
+                    var reading = (page ?? ((from, capability) => DashboardProbe.RunAsync(from, capability)))(launch.Origin, launch.Capability);
+                    sampling = Task.Run(async () => { await Task.Delay(2000); return await wsl.RunAsync(found.Distro, null, "bash", "-c", ProcessFacts.ReplaceLineEndings("\n")); });
+                    foreach (var result in await reading) Add(Piagent, result.Ok ? SupportState.ok : SupportState.failed, result.Label, result.Detail);
+                }
             }
             catch (Exception error) { Add(Piagent, SupportState.failed, "Mở trang như trình duyệt", Explain(error)); }
+            if (sampling is not null)
+            {
+                try
+                {
+                    var sampled = (await sampling).Split("@@process@@").Skip(1).Select(part => part.Split("@@", 2)[0].Trim().Split('|')).Where(part => part.Length == 6).ToArray();
+                    foreach (var part in sampled)
+                    {
+                        string Shown(string name, string value) => value.Trim(',', ' ').Length > 0 ? $" · {name}: {value.Trim(',', ' ').Replace(",", "; ")}" : "";
+                        var blocked = part[2].Split(',', StringSplitOptions.TrimEntries).Where(sample => sample.Contains(" D ", StringComparison.Ordinal))
+                            .Sum(sample => int.TryParse(sample.Split(' ')[0], out var count) ? count : 0);
+                        Add(Piagent, blocked >= 4 ? SupportState.failed : SupportState.note, part[0].Contains("studio", StringComparison.Ordinal) ? "Tiến trình Gateway công ty" : "Tiến trình dashboard",
+                            part[1] + Shown("16 mẫu trong 8s", part[2]) + Shown("tiến trình con", part[3]) + Shown("thư mục", part[4]) + Shown("file đang mở", part[5])
+                            + (blocked >= 4 ? $" · bị chặn chờ đĩa/file ở {blocked}/16 mẫu" : ""));
+                    }
+                    if (!sampled.Any(part => part[0].Contains("studio", StringComparison.Ordinal))) Add(Piagent, SupportState.note, "Tiến trình Gateway công ty", "không chạy lúc kiểm tra");
+                }
+                catch (Exception error) { Add(Piagent, SupportState.note, "Tiến trình Piagent", "không đo được: " + Explain(error)); }
+            }
         }
 
         var doctor = Json(Section(facts, "doctor"));

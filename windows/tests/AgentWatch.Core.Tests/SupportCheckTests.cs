@@ -21,13 +21,16 @@ public class SupportCheckTests : IDisposable
     }
 
     // Piagent in WSL as the two support scripts see it.
-    sealed class Wsl(Func<JsonObject?> binding, string running = "1.22.0", string doctor = " ok   sandbox starts and runs a command — bash\nReady for company sessions. No model request was sent.") : IWsl
+    sealed class Wsl(Func<JsonObject?> binding, string running = "1.22.0", string samples = "16 S epoll_wait,", string doctor = " ok   sandbox starts and runs a command — bash\nReady for company sessions. No model request was sent.") : IWsl
     {
         public readonly List<string[]> Commands = [];
         public Task<string> RunAsync(string? distro, string? input, params string[] command)
         {
             Commands.Add(command);
             var script = string.Join(' ', command);
+            if (script.Contains("@@process@@")) return Task.FromResult(
+                "@@process@@piagent-dashboard.mjs|pid 927, chạy 94s, CPU 2.2%|16 S epoll_wait,||/home/dev|\n"
+                + $"@@process@@piagent-studio.mjs|pid 950, chạy 92s, CPU 5.2%|{samples}|S 3 /init /mnt/c/agentwatch.exe managed-broker,|/home/dev/probe|1 /mnt/c/x.jsonl,\n@@end@@\n");
             if (script.Contains("dashboard open --no-open")) return Task.FromResult("@@launch@@\n" + new JsonObject { ["state"] = "running", ["launchUrl"] = "http://127.0.0.1:41873/#bootstrap=" + new string('c', 43) }.ToJsonString() + "\n@@end@@\n");
             if (script.Contains("studio --doctor")) return Task.FromResult($"@@doctor@@\n{doctor}\n@@end@@\n");
             if (script.Contains("dashboard status")) return Task.FromResult(
@@ -67,6 +70,7 @@ public class SupportCheckTests : IDisposable
         Assert.StartsWith("Không thấy lỗi ở cả ba chặng.", report);
         Assert.Contains("1 model được cấp", report); Assert.Contains("✓ Trang đọc danh sách hội thoại — HTTP 200 · 0.1s · 3 hội thoại", report);
         Assert.DoesNotContain(new string('c', 43), report);
+        Assert.Contains("· Tiến trình Gateway công ty — pid 950, chạy 92s, CPU 5.2% · 16 mẫu trong 8s: 16 S epoll_wait · tiến trình con: S 3 /init /mnt/c/agentwatch.exe managed-broker", report);
         Assert.DoesNotContain("Sol", report); Assert.DoesNotContain("gpt-6-sol", report); Assert.DoesNotContain("as_live", report);
         Assert.DoesNotContain(wsl.Commands, command => command.Any(part => part.Contains('\r')));
     }
@@ -77,7 +81,7 @@ public class SupportCheckTests : IDisposable
         var (profiles, keys, studio, broker) = await Connected();
         studio.Override = (_, _, _) => (401, "{}");
         var bound = Binding(profiles.Active()!.Id, broker);
-        var wsl = new Wsl(() => bound, running: "1.21.0", doctor: " FAIL Agent Watch answers with the company key — managed-broker:invalidKey\nNot ready: 1 required check(s) failed.");
+        var wsl = new Wsl(() => bound, running: "1.21.0", samples: "9 D read /mnt/c/x.jsonl,7 S epoll_wait,", doctor: " FAIL Agent Watch answers with the company key — managed-broker:invalidKey\nNot ready: 1 required check(s) failed.");
         File.WriteAllText(broker, "broker after an update");
         var lines = await SupportCheck.RunAsync(profiles, keys, new StudioClient(studio), wsl, null, broker, _ => throw new HttpRequestException("refused"),
             page: (_, _) => Task.FromResult<IReadOnlyList<DashboardProbe.Result>>([new("Trang đọc danh sách hội thoại", false, "không trả lời sau 30s: trang sẽ quay mãi ở bước này")]));
@@ -87,6 +91,8 @@ public class SupportCheckTests : IDisposable
         Assert.Contains("1.21.0", Failed("Dashboard"));
         Assert.Contains("wsl --shutdown", Failed("Windows mở được trang dashboard"));
         Assert.Contains("quay mãi", Failed("Trang đọc danh sách hội thoại"));
+        Assert.Contains("9 D read /mnt/c/x.jsonl; 7 S epoll_wait", Failed("Tiến trình Gateway công ty"));
+        Assert.Contains("bị chặn chờ đĩa/file ở 9/16 mẫu", Failed("Tiến trình Gateway công ty"));
         Assert.Contains("managed-broker:invalidKey", Failed("Kiểm tra phiên công ty (piagent studio --doctor)"));
         Assert.DoesNotContain(lines, line => line.Area == SupportCheck.AgentWatch && line.State == SupportState.failed);
         Assert.StartsWith($"Có lỗi ở: {SupportCheck.Studio}, {SupportCheck.Piagent}.", SupportCheck.Format(lines, DateTimeOffset.UnixEpoch));
