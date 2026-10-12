@@ -16,6 +16,18 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        // An unhandled error closed the app without a word. It is written to
+        // crash.log; one raised on the window's thread is shown and survived.
+        var telling = false;
+        DispatcherUnhandledException += (_, failure) =>
+        {
+            CrashLog.Write(failure.Exception); failure.Handled = true;
+            if (telling) return;
+            telling = true;
+            try { MessageBox.Show($"Agent Watch gặp lỗi và đã ghi lại ở:\n{CrashLog.File}\n\n{failure.Exception.GetType().Name}: {failure.Exception.Message}", "Agent Watch", MessageBoxButton.OK, MessageBoxImage.Warning); }
+            finally { telling = false; }
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, failure) => CrashLog.Write(failure.ExceptionObject as Exception);
         single = new Mutex(true, @"Local\AgentWatch.Windows", out var first);
         showRequest = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\AgentWatch.Windows.Show");
         if (!first)

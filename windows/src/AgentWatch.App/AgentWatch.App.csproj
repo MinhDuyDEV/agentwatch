@@ -10,6 +10,10 @@
     <AssemblyName>AgentWatchApp</AssemblyName>
     <RootNamespace>AgentWatch.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- The solution runs culture-invariant, but WPF's text layout names
+         cultures ("en") when it measures some fonts and glyphs: refusing those
+         names closed the app the moment the support report was drawn. -->
+    <PredefinedCulturesOnly>false</PredefinedCulturesOnly>
   </PropertyGroup>
   <ItemGroup>
     <!-- WinForms is here for the notification-area icon only (TrayIcon.cs). -->

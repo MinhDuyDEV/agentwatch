@@ -78,7 +78,10 @@ try
             // Which leg fails: this app, the route to Studio, or Piagent in WSL. Changes nothing.
             var distro = rest.Length == 2 ? rest[1] : PiagentWslBinding.Remembered();
             var lines = await SupportCheck.RunAsync(profiles, keys, new StudioClient(), new WslExe(), distro, Environment.ProcessPath!);
-            stdout.WriteLine(SupportCheck.Format(lines, DateTimeOffset.Now));
+            var report = SupportCheck.Format(lines, DateTimeOffset.Now);
+            SupportCheck.Save(report);
+            stdout.WriteLine(report);
+            stdout.WriteLine("\nĐã lưu: " + SupportCheck.ReportFile);
             return lines.Any(line => line.State == SupportState.failed) ? 1 : 0;
         }
         case "--version":

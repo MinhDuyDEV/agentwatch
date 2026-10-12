@@ -295,15 +295,30 @@ public partial class MainWindow : Window
     void CopySetup(object sender, RoutedEventArgs e) => Copy(SetupCommand, "Đã sao chép. Chạy lệnh trong PowerShell rồi quay lại kiểm tra WSL.");
     void CopyDiagnostics(object sender, RoutedEventArgs e) => Copy(DiagnosticsSummary.Text + (SupportReport.Text.Length > 0 ? "\n\n" + SupportReport.Text : ""),
         "Đã sao chép thông tin hỗ trợ, không kèm key, tên model hoặc nội dung hội thoại.");
+    void CopySupportReport(object sender, RoutedEventArgs e) => Copy(SupportReport.Text, "Đã sao chép kết quả kiểm tra log.");
+    void OpenSupportReport(object sender, RoutedEventArgs e)
+    {
+        try { Process.Start(new ProcessStartInfo("notepad.exe") { UseShellExecute = false, ArgumentList = { SupportCheck.ReportFile } }); }
+        catch (Exception) { Status.Text = "Chưa mở được file. Đường dẫn: " + SupportCheck.ReportFile; }
+    }
     // Agent Watch, the route to Studio, then Piagent and its dashboard in WSL:
-    // every leg is checked even after one fails. Nothing is changed.
+    // every leg is checked even after one fails. Nothing is changed. The
+    // report fills in as each step ends, on screen and in support-check.txt.
     async void CheckLog(object sender, RoutedEventArgs e) => await RunAsync("Đang kiểm tra Agent Watch, Studio và Piagent… (có thể mất 1–2 phút)", async () =>
     {
         SupportCard.Visibility = Visibility.Visible;
-        SupportReport.Text = "Đang kiểm tra…";
+        SupportFile.Text = "Lưu tại: " + SupportCheck.ReportFile;
+        var started = DateTimeOffset.Now;
+        void Show(IReadOnlyList<SupportLine> known, bool done)
+        {
+            var report = SupportCheck.Format(known, started, done);
+            SupportCheck.Save(report);
+            SupportReport.Text = report;
+        }
+        Show([], false);
         var distro = ready ? checkedDistro : PiagentWslBinding.Remembered();
-        var lines = await SupportCheck.RunAsync(profiles, keys, new StudioClient(), new WslExe(), distro, Broker);
-        SupportReport.Text = SupportCheck.Format(lines, DateTimeOffset.Now);
+        var lines = await SupportCheck.RunAsync(profiles, keys, new StudioClient(), new WslExe(), distro, Broker, progress: known => Show(known, false));
+        Show(lines, true);
         Status.Text = lines.Any(line => line.State == SupportState.failed) ? "Đã kiểm tra: có bước lỗi, xem kết quả bên dưới." : "Đã kiểm tra: không thấy lỗi ở cả ba chặng.";
     });
     void Copy(string value, string success)

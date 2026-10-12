@@ -5,6 +5,7 @@ using Xunit;
 
 namespace AgentWatch.Tests;
 
+[Collection("data directory")]
 public class SupportCheckTests : IDisposable
 {
     const string Code = "https://studio.example.com#as_live_test-key_0123456789";
@@ -93,6 +94,42 @@ public class SupportCheckTests : IDisposable
             new FailingWsl(), null, Path.Combine(directory, "missing.exe"));
         Assert.Contains(lines, line => line.Area == SupportCheck.AgentWatch && line.Label == "Kết nối đã lưu" && line.State == SupportState.failed);
         Assert.Contains(lines, line => line.Area == SupportCheck.Piagent && line.State == SupportState.failed && line.Detail.Contains("[wsl-runtime-unreadable]"));
+    }
+
+    sealed class BrokenKeys : IStudioKeyStore
+    {
+        public string? Load(string id) => throw new NotSupportedException("no key store here");
+        public void Save(string id, string key) { }
+        public void Delete(string id) { }
+    }
+
+    [Fact]
+    public async Task AnUnforeseenFailureIsALineOfTheReportAndEachStepIsReportedAsItEnds()
+    {
+        var (profiles, _, studio, broker) = await Connected();
+        var seen = new List<int>();
+        var lines = await SupportCheck.RunAsync(profiles, new BrokenKeys(), new StudioClient(studio), new FailingWsl(), null, broker, progress: known => seen.Add(known.Count));
+        Assert.Contains(lines, line => line.State == SupportState.failed && line.Detail.Contains("NotSupportedException"));
+        Assert.Equal(Enumerable.Range(1, lines.Count), seen);
+        Assert.StartsWith("Đang kiểm tra", SupportCheck.Format(lines, DateTimeOffset.UnixEpoch, done: false));
+    }
+
+    [Fact]
+    public async Task TheLastUnhandledErrorIsKeptAndShownInTheReport()
+    {
+        var previous = Environment.GetEnvironmentVariable("AGENTWATCH_DATA_DIR");
+        Environment.SetEnvironmentVariable("AGENTWATCH_DATA_DIR", directory);
+        try
+        {
+            Assert.Null(CrashLog.Last());
+            CrashLog.Write(new InvalidOperationException("layout broke"), DateTimeOffset.UnixEpoch);
+            Assert.Contains("InvalidOperationException: layout broke", CrashLog.Last());
+            var lines = await SupportCheck.RunAsync(new StudioProfileStore(directory), new MemoryKeys(), new StudioClient(new FakeStudio()), new FailingWsl(), null, "missing.exe");
+            Assert.Contains(lines, line => line.Label == "Lỗi app gần nhất" && line.Detail.Contains("layout broke"));
+            SupportCheck.Save(SupportCheck.Format(lines, DateTimeOffset.UnixEpoch));
+            Assert.Contains("Lỗi app gần nhất", File.ReadAllText(SupportCheck.ReportFile));
+        }
+        finally { Environment.SetEnvironmentVariable("AGENTWATCH_DATA_DIR", previous); }
     }
 
     sealed class FailingWsl : IWsl

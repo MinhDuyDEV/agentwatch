@@ -158,6 +158,8 @@ public class ManifestTests
     }
 }
 
+// AGENTWATCH_DATA_DIR is one per process: classes that set it run one after another.
+[Collection("data directory")]
 public class BrokerTests : IDisposable
 {
     readonly string directory = Directory.CreateTempSubdirectory("agentwatch-tests-").FullName;

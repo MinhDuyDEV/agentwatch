@@ -49,7 +49,24 @@ try {
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
     Click-Control 'Quay lại'
     Wait-Control 'Bắt đầu với Agent Watch' | Out-Null
-    Write-Host 'PASS: native wizard navigation, key entry options, verification gate and no credential persistence.'
+    # The support check draws its report in another font with ✓ and ✗: the
+    # app must still be there once it has ended (no key, maybe no WSL here).
+    Click-Control 'Chẩn đoán'
+    Wait-Control 'Tình trạng trên máy' | Out-Null
+    Click-Control 'Kiểm tra log'
+    $report = Wait-Control 'Báo cáo kiểm tra log'
+    $deadline = [DateTime]::UtcNow.AddSeconds(300)
+    do {
+        Start-Sleep -Milliseconds 500
+        $process.Refresh(); if ($process.HasExited) { throw 'The app closed while checking the log.' }
+        $text = $report.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value
+    } while (($text -notmatch 'AGENT WATCH' -or $text.StartsWith('Đang kiểm tra')) -and [DateTime]::UtcNow -lt $deadline)
+    if ($text -notmatch 'Có lỗi ở: ') { throw "The support check did not report a machine without a connection: $text" }
+    Start-Sleep -Seconds 2
+    $process.Refresh(); if ($process.HasExited) { throw 'The app closed after drawing the support report.' }
+    if (-not (Select-String -Path (Join-Path $temporary 'support-check.txt') -Pattern 'AGENT WATCH' -Quiet)) { throw 'The support report was not saved.' }
+    if (Test-Path (Join-Path $temporary 'crash.log')) { throw "The app logged an unhandled error: $(Get-Content (Join-Path $temporary 'crash.log') -Raw)" }
+    Write-Host 'PASS: native wizard navigation, key entry options, verification gate, no credential persistence, and a support check that reports and survives.'
 } finally {
     if ($process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force }
     $env:AGENTWATCH_DATA_DIR = $originalData

@@ -50,7 +50,7 @@ public static partial class SupportCheck
             _ => $"[{invalid.Message}]",
         },
         System.ComponentModel.Win32Exception => "Không khởi chạy được wsl.exe: cài WSL2 rồi thử lại.",
-        _ => $"[{error.GetType().Name}]",
+        _ => $"[{error.GetType().Name}: {error.Message[..Math.Min(error.Message.Length, 200)]}]",
     };
 
     static string Section(string output, string name)
@@ -79,11 +79,23 @@ public static partial class SupportCheck
         return (int)response.StatusCode;
     }
 
+    // The check never throws: a step that breaks in an unforeseen way becomes
+    // a line of the report. `progress` hears each line as it is known, so a
+    // report written along the way shows the last step reached.
     public static async Task<IReadOnlyList<SupportLine>> RunAsync(StudioProfileStore profiles, IStudioKeyStore keys, StudioClient client, IWsl wsl,
-        string? distro, string brokerPath, Func<Uri, Task<int>>? probe = null)
+        string? distro, string brokerPath, Func<Uri, Task<int>>? probe = null, Action<IReadOnlyList<SupportLine>>? progress = null)
     {
         var lines = new List<SupportLine>();
-        void Add(string area, SupportState state, string label, string detail = "") => lines.Add(new(area, state, label, detail));
+        void Add(string area, SupportState state, string label, string detail = "") { lines.Add(new(area, state, label, detail)); progress?.Invoke(lines); }
+        try { await CollectAsync(Add, profiles, keys, client, wsl, distro, brokerPath, probe); }
+        catch (Exception error) { Add(lines.LastOrDefault()?.Area ?? AgentWatch, SupportState.failed, "Kiểm tra dừng giữa chừng", Explain(error)); }
+        return lines;
+    }
+
+    static async Task CollectAsync(Action<string, SupportState, string, string> add, StudioProfileStore profiles, IStudioKeyStore keys, StudioClient client, IWsl wsl,
+        string? distro, string brokerPath, Func<Uri, Task<int>>? probe)
+    {
+        void Add(string area, SupportState state, string label, string detail = "") => add(area, state, label, detail);
         async Task<bool> Step(string area, string label, Func<Task<string>> run)
         {
             try { Add(area, SupportState.ok, label, await run()); return true; }
@@ -91,6 +103,7 @@ public static partial class SupportCheck
         }
 
         Add(AgentWatch, SupportState.note, "Phiên bản", StudioClient.UserAgent);
+        if (CrashLog.Last() is { } crash) Add(AgentWatch, SupportState.failed, "Lỗi app gần nhất", crash);
         StudioProfile? active = null; string? key = null;
         try
         {
@@ -137,7 +150,7 @@ public static partial class SupportCheck
             if (runtime.User == "root") throw new InvalidOperationException("wsl-root-user");
             return $"{runtime.Distro} · user {runtime.User} · Pi {runtime.PiVersion}";
         });
-        if (runtime is not { } found) return lines;
+        if (runtime is not { } found) return;
         await Step(Piagent, "WSL2, sandbox và Windows interop", async () => { await WslReadiness.CheckAsync(wsl, found.Distro); return "sẵn sàng"; });
 
         string facts;
@@ -146,7 +159,7 @@ public static partial class SupportCheck
             var package = found.Entrypoint[..found.Entrypoint.LastIndexOf("/scripts/", StringComparison.Ordinal)] + "/package.json";
             facts = await wsl.RunAsync(found.Distro, null, "bash", "-lic", DashboardFacts.ReplaceLineEndings("\n"), "agentwatch-support", found.Node, package);
         }
-        catch (Exception error) { Add(Piagent, SupportState.failed, "Đọc trạng thái dashboard", Explain(error)); return lines; }
+        catch (Exception error) { Add(Piagent, SupportState.failed, "Đọc trạng thái dashboard", Explain(error)); return; }
 
         var installed = Section(facts, "version");
         Add(Piagent, SupportState.note, "Bản Piagent đã cài", installed.Length is > 0 and <= 40 ? installed : "không đọc được");
@@ -217,15 +230,14 @@ public static partial class SupportCheck
             }
             catch (Exception error) { Add(Piagent, SupportState.failed, "Kiểm tra phiên công ty (piagent studio --doctor)", Explain(error)); }
         }
-        return lines;
     }
 
     // What the member reads and copies for support.
-    public static string Format(IReadOnlyList<SupportLine> lines, DateTimeOffset at)
+    public static string Format(IReadOnlyList<SupportLine> lines, DateTimeOffset at, bool done = true)
     {
         var text = new StringBuilder();
         var broken = lines.Where(line => line.State == SupportState.failed).Select(line => line.Area).Distinct().ToArray();
-        text.Append(broken.Length == 0 ? "Không thấy lỗi ở cả ba chặng." : "Có lỗi ở: " + string.Join(", ", broken) + ".");
+        text.Append(!done ? "Đang kiểm tra… (chưa xong)" : broken.Length == 0 ? "Không thấy lỗi ở cả ba chặng." : "Có lỗi ở: " + string.Join(", ", broken) + ".");
         text.Append($"\nKiểm tra lúc {at:HH:mm dd/MM/yyyy}\n");
         foreach (var area in lines.Select(line => line.Area).Distinct())
         {
@@ -235,5 +247,43 @@ public static partial class SupportCheck
                     .Append(line.Label).Append(line.Detail.Length > 0 ? " — " + line.Detail : "").Append('\n');
         }
         return text.ToString().TrimEnd();
+    }
+
+    // The report is also kept as a file, to read and send after the window is gone.
+    public static string ReportFile => Path.Combine(AgentWatchPaths.DataDirectory, "support-check.txt");
+
+    public static void Save(string report)
+    {
+        try { Directory.CreateDirectory(AgentWatchPaths.DataDirectory); File.WriteAllText(ReportFile, report + "\n", new UTF8Encoding(true)); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { /* the report is still on screen */ }
+    }
+}
+
+// An error nothing handled, kept where support can read it: the app used to
+// close without a trace. Exception text only; keys never appear in one.
+public static class CrashLog
+{
+    public static string File => Path.Combine(AgentWatchPaths.DataDirectory, "crash.log");
+
+    public static void Write(Exception? error, DateTimeOffset? at = null)
+    {
+        try
+        {
+            Directory.CreateDirectory(AgentWatchPaths.DataDirectory);
+            var text = error?.ToString() ?? "unknown error";
+            System.IO.File.WriteAllText(File, $"{at ?? DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} {StudioClient.UserAgent}\n{text[..Math.Min(text.Length, 8000)]}\n", new UTF8Encoding(true));
+        }
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { /* nowhere left to say it */ }
+    }
+
+    // When it happened and its first line, for the support report.
+    public static string? Last()
+    {
+        try
+        {
+            var lines = System.IO.File.ReadLines(File).Take(2).ToArray();
+            return lines.Length == 0 ? null : string.Join(" · ", lines)[..Math.Min(string.Join(" · ", lines).Length, 300)] + $" (chi tiết: {File})";
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
     }
 }
