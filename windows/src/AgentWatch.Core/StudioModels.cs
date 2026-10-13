@@ -125,7 +125,9 @@ public sealed record StudioHarnessConfiguration(
     [property: JsonPropertyName("review")] StudioHarnessRole? Review = null,
     [property: JsonPropertyName("workflow")] StudioWorkflow? Workflow = null,
     [property: JsonPropertyName("scout")] StudioHarnessRole? Scout = null,
-    [property: JsonPropertyName("verify")] StudioHarnessRole? Verify = null);
+    [property: JsonPropertyName("verify")] StudioHarnessRole? Verify = null,
+    // The Harness lets members turn on fast mode; Watch only carries it to the runtime.
+    [property: JsonPropertyName("fast_mode")] bool? FastMode = null);
 
 public sealed record StudioHarness(
     [property: JsonPropertyName("id")] Guid Id,

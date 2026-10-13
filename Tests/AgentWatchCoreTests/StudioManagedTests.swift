@@ -118,7 +118,14 @@ private actor ManagedTransport: StudioHTTPTransport {
         let (profile, base) = try configuration()
         let low = StudioHarnessRole(mode: "fixed", modelIDs: ["company-main"], effort: "low")
         let workflow = StudioWorkflow(plan: "suggest", verify: "require", review: "suggest", maxFixLoops: 2)
-        let harness = StudioHarness(id: profileID, teamID: team, revision: 2, configuration: .init(main: low, research: low, review: nil, workflow: workflow))
+        var harness = StudioHarness(id: profileID, teamID: team, revision: 2, configuration: .init(main: low, research: low, review: nil, workflow: workflow))
+        // Fast mode is the Harness's to allow: off (absent) unless Studio says so.
+        guard case .object(let plain) = try StudioManagedBrokerCommand.configValue(StudioManifest(authority: base.authority, harness: harness, schemaVersion: 2, revision: base.revision, orgID: org, user: base.user, keyID: keyID, credentialMode: .managed, expiresAt: base.expiresAt, refreshSeconds: 300, models: [], codexCatalog: .object([:]))),
+              case .object(let plainHarness) = plain["harness"], case .object(let plainConfig) = plainHarness["configuration"] else { return XCTFail("config shape") }
+        XCTAssertNil(plainConfig["fast_mode"])
+        let decoded = try JSONDecoder().decode(StudioHarness.Configuration.self, from: Data(#"{"main":{"mode":"fixed","model_ids":["company-main"],"effort":"low"},"research":{"mode":"fixed","model_ids":["company-main"],"effort":"low"},"workflow":{"plan":"suggest","verify":"require","review":"suggest","max_fix_loops":2},"fast_mode":true}"#.utf8))
+        XCTAssertEqual(decoded.fastMode, true)
+        harness = StudioHarness(id: profileID, teamID: team, revision: 2, configuration: decoded)
         let manifest = StudioManifest(authority: base.authority, harness: harness, schemaVersion: 2, revision: base.revision, orgID: org, user: base.user, keyID: keyID, credentialMode: .managed, expiresAt: base.expiresAt, refreshSeconds: 300, models: [], codexCatalog: .object([:]))
         try manifest.validate(profile: profile)
         guard case .object(let out) = try StudioManagedBrokerCommand.configValue(manifest), case .object(let h) = out["harness"], case .object(let c) = h["configuration"],
@@ -126,6 +133,7 @@ private actor ManagedTransport: StudioHTTPTransport {
         XCTAssertEqual(w["verify"].flatMap { if case .string(let s) = $0 { s } else { nil } }, "require")
         XCTAssertEqual(w["max_fix_loops"].flatMap { if case .number(let n) = $0 { n } else { nil } }, 2)
         XCTAssertEqual(r["effort"].flatMap { if case .string(let s) = $0 { s } else { nil } }, "low")
+        XCTAssertEqual(c["fast_mode"].flatMap { if case .bool(let b) = $0 { b } else { nil } }, true)
         guard case .array(let features) = out["broker_features"] else { return XCTFail("features") }
         XCTAssertEqual(features.count, 1)
         for bad in [StudioWorkflow(plan: "always", verify: "off", review: "off", maxFixLoops: 1), StudioWorkflow(plan: "off", verify: "off", review: "off", maxFixLoops: 4)] {

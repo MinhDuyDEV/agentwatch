@@ -36,6 +36,11 @@ public struct StudioHarness: Codable, Sendable {
         /// A Studio without them sends neither, and the runtime offers neither.
         public var scout: StudioHarnessRole? = nil
         public var verify: StudioHarnessRole? = nil
+        /// The Harness lets members turn on fast mode (a Codex model's priority
+        /// tier, charged to the key's quota at a higher rate). Watch only
+        /// carries it to the runtime, which shows the switch.
+        public var fastMode: Bool? = nil
+        enum CodingKeys: String, CodingKey { case main, research, review, workflow, scout, verify, fastMode = "fast_mode" }
     }
     /// The roles the main agent may delegate to.
     public static let helperRoles: Set<String> = ["scout", "research", "verify", "review"]
