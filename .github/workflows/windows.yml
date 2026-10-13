@@ -53,6 +53,8 @@ jobs:
           path: |
             windows/publish/*.zip
             windows/publish/SHA256SUMS
+          # CI builds are kept a week; releases keep their own assets.
+          retention-days: 7
 
   # The one-command setup (setup.ps1) end to end, as members run it: Windows
   # PowerShell 5.1, a fresh Ubuntu in WSL whose only user is root, twice (the
@@ -182,6 +184,7 @@ jobs:
           name: windows-wizard-smoke
           path: windows/tests/artifacts/
           if-no-files-found: ignore
+          retention-days: 7
       - name: Updating replaces the running app and broker
         shell: powershell
         env:
