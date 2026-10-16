@@ -8,6 +8,14 @@
         <description>Most recent changes for AgentWatch macOS.</description>
         <language>en</language>
         <item>
+            <title>Version 0.15.5</title>
+            <sparkle:version>01505</sparkle:version>
+            <sparkle:shortVersionString>0.15.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <pubDate>Fri, 16 Oct 2026 03:04:56 +0000</pubDate>
+            <enclosure url="https://github.com/Vt-mmm/agentwatch/releases/download/v0.15.5/AgentWatchMac-0.15.5.zip" sparkle:edSignature="2U1YyYUUs13L3aT5qrMtIheMvMfiRS2Se4K2PDES5aC7iu5YNDVeY/ZkdeptlQdWryl4RuTId6EojKdEEFs7AQ==" length="13679682" type="application/octet-stream"/>
+        </item>
+        <item>
             <title>Version 0.15.4</title>
             <sparkle:version>01504</sparkle:version>
             <sparkle:shortVersionString>0.15.4</sparkle:shortVersionString>
