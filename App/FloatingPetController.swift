@@ -17,7 +17,7 @@ final class FloatingPetController {
     var isVisible: Bool = false {
         didSet {
             UserDefaults.standard.set(isVisible, forKey: "FloatingPetController.visible")
-            syncWindow()
+            if started { syncWindow() }
         }
     }
 
@@ -35,6 +35,9 @@ final class FloatingPetController {
     var level: Int = 1 { didSet { refresh() } }
 
     private var window: NSWindow?
+    /// False until the run loop turns after init: the controller is built while
+    /// SwiftUI builds the App's scenes, and laying out a window then aborts.
+    @ObservationIgnored private var started = false
     private var dismissTask: Task<Void, Never>?
     private let frameKey = "FloatingPetController.frame"
 
@@ -43,6 +46,11 @@ final class FloatingPetController {
         // đích thực sự (nhận event từ socket daemon). User có thể tắt từ Settings.
         isVisible = UserDefaults.standard.object(forKey: "FloatingPetController.visible")
             .flatMap { $0 as? Bool } ?? true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            started = true
+            syncWindow()
+        }
     }
 
     /// Set talk message + auto-dismiss sau N giây.
