@@ -229,8 +229,18 @@ public struct StudioManagedClient: Sendable {
             guard role.isEmpty || role == "main", StudioProcessReport.valid(process, versions: manifest.processVersions ?? [1]) else { throw StudioError.invalidResponse }
             if manifest.harness?.configuration.workflow != nil { body["process"] = .object(process) }
         }
-        _ = try await client.request(profile.origin, "runs/\(root.uuidString.lowercased())/close", credential: device.token, body: body)
-        if role.isEmpty || role == "main" { self.root = nil; grants.removeAll() } else { grants.removeValue(forKey: role) }
+        let run = role.isEmpty || role == "main"
+        do { _ = try await client.request(profile.origin, "runs/\(root.uuidString.lowercased())/close", credential: device.token, body: body) }
+        catch {
+            // A run Studio did not confirm closed (unreachable, 5xx, refused
+            // grant) is settled by Studio when its lease lapses. Keeping it
+            // here would refuse every later start of this broker. Only a
+            // refused report keeps it, so the runtime can close without one.
+            let kind = (error as? StudioManagedRefusal)?.error ?? error as? StudioError
+            if run, kind != .invalidResponse { self.root = nil; grants.removeAll() }
+            throw error
+        }
+        if run { self.root = nil; grants.removeAll() } else { grants.removeValue(forKey: role) }
     }
 }
 

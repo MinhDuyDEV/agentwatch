@@ -141,8 +141,14 @@ public sealed class StudioManagedBroker
             if (!(role.Length == 0 || role == "main") || !StudioProcessReport.Valid(process, Manifest.ProcessVersions ?? [1])) throw new StudioException(StudioError.invalidResponse);
             if (Manifest.Harness?.Configuration.Workflow is not null) body["process"] = process.DeepClone();
         }
-        await Post(transport, Profile.StudioOrigin, $"runs/{Id(run)}/close", device.Token, body, cancellation);
-        if (role.Length == 0 || role == "main") { root = null; grants.Clear(); } else grants.Remove(role);
+        var whole = role.Length == 0 || role == "main";
+        try { await Post(transport, Profile.StudioOrigin, $"runs/{Id(run)}/close", device.Token, body, cancellation); }
+        // A run Studio did not confirm closed (unreachable, 5xx, refused
+        // grant) is settled by Studio when its lease lapses. Keeping it here
+        // would refuse every later start of this broker. Only a refused
+        // report keeps it, so the runtime can close without one.
+        catch (Exception error) when (whole && (error as StudioException)?.Code != StudioError.invalidResponse) { root = null; grants.Clear(); throw; }
+        if (whole) { root = null; grants.Clear(); } else grants.Remove(role);
     }
 
     // The manifest for the runtime, with what this broker accepts beyond the

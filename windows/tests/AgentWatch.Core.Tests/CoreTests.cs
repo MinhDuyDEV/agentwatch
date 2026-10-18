@@ -245,6 +245,27 @@ public class BrokerTests : IDisposable
         Assert.Equal("invalidResponse", answers[3]["error"]!.GetValue<string>());
     }
 
+    // A close Studio could not confirm (503 after Stop during a command)
+    // must not wedge the broker: the next start reaches Studio, which
+    // settles the unconfirmed run when its lease lapses.
+    [Fact]
+    public async Task AFailedCloseDoesNotBlockTheNextStart()
+    {
+        var (studio, profile, key) = await Connected();
+        var failing = true;
+        studio.Override = (method, path, body) => path.EndsWith("/close") && failing ? (503, "{\"error\":{\"code\":\"managed_service_unavailable\"}}") : null;
+        JsonObject Start() => Ask("start", new() { ["operation_id"] = Guid.NewGuid().ToString(), ["effort"] = "medium", ["task_class"] = "standard" });
+        var input = new StringReader(string.Join("\n", new[] { Ask("config"), Start(), Ask("close", new() { ["role"] = "" }), Ask("close", new() { ["role"] = "" }), Start() }.Select(r => r.ToJsonString())) + "\n");
+        var output = new StringWriter();
+        Assert.Equal(0, await StudioCommands.BrokerAsync(["--profile", profile.Id], input, output, _ => StudioManagedBroker.EnrollAsync(profile, key, studio)));
+        var answers = output.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => (JsonObject)JsonNode.Parse(line)!).ToList();
+        Assert.Equal("serverUnavailable", answers[2]["error"]!.GetValue<string>());
+        Assert.Null(answers[3]["error"]); // the retry has nothing left to close
+        Assert.Null(answers[4]["error"]);
+        Assert.Equal(2, studio.Requests.Count(r => r.Path == "studio/v1/managed/runs"));
+        Assert.Equal(2, studio.Requests.Count(r => r.Path.EndsWith("/close"))); // the failed close, then the second run's close at exit
+    }
+
     [Fact]
     public async Task AuthorizeAndCredentialFollowTheSavedSlot()
     {

@@ -207,6 +207,39 @@ private actor ManagedTransport: StudioHTTPTransport {
         let oldBody = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(oldSent.last?.httpBody)) as? [String: Any])
         XCTAssertNil(oldBody["process"]); XCTAssertEqual(oldBody["role"] as? String, "")
     }
+    /// A close Studio could not confirm (503 after Stop during a command)
+    /// must not wedge the broker: the next start reaches Studio. Studio
+    /// settles the unconfirmed run when its lease lapses.
+    func testFailedCloseDoesNotBlockNextStart() async throws {
+        let unavailable: [String: Any] = ["error": ["code": "managed_service_unavailable"]]
+        let transport = ManagedTransport([(201, grant()), (503, unavailable), (201, grant()), (204, [:])])
+        let broker = try broker(transport)
+        _ = try await broker.start(operation: UUID(), effort: "medium", taskClass: "standard")
+        do { try await broker.close(); XCTFail("failed close reported as closed") }
+        catch { XCTAssertEqual((error as? StudioManagedRefusal)?.error, .serverUnavailable) }
+        // The runtime's retry without a report has nothing left to close.
+        try await broker.close()
+        _ = try await broker.start(operation: UUID(), effort: "medium", taskClass: "standard")
+        try await broker.close()
+        let paths = await transport.captured().compactMap { $0.url?.path }
+        XCTAssertEqual(paths.count, 4)
+        XCTAssertTrue(paths[2].hasSuffix("/managed/runs"))
+    }
+    /// Studio refusing the process report keeps the run, so the runtime can
+    /// close it without the report.
+    func testRefusedReportKeepsRunForPlainClose() async throws {
+        let refused: [String: Any] = ["error": ["code": "invalid_request"]]
+        let transport = ManagedTransport([(201, grant()), (400, refused), (204, [:])])
+        let broker = try broker(transport)
+        _ = try await broker.start(operation: UUID(), effort: "medium", taskClass: "standard")
+        let report = try XCTUnwrap(StudioManagedBrokerCommand.processValue(["version": 1, "policy": ["plan": "suggest", "verify": "suggest", "review": "off"], "changed": false,
+            "plan_steps": 0, "plan_done": 0, "checks": 0, "checks_failed": 0, "verified": false, "reviews": 0, "reviewed": false, "blocking": 0, "blocking_open": 0, "fix_loops": 0, "outcome": "interrupted"]))
+        do { try await broker.close(process: report); XCTFail("refused report reported as closed") } catch {}
+        try await broker.close()
+        let sent = await transport.captured()
+        XCTAssertEqual(sent.count, 3)
+        XCTAssertTrue(sent[2].url?.path.hasSuffix("/close") == true)
+    }
     func testRenewCannotChangePinnedModel() async throws {
         let transport = ManagedTransport([(201, grant()), (200, grant(fence: 2, model: "other-account"))])
         let broker = try broker(transport)
