@@ -275,6 +275,9 @@ private actor ManagedTransport: StudioHTTPTransport {
         XCTAssertFalse(StudioManagedConfiguration.bindingStale(directory: dir))
         try Data("#!/usr/bin/env node\nconsole.log('next release');\n".utf8).write(to: entry)
         XCTAssertTrue(StudioManagedConfiguration.bindingStale(directory: dir))
+        let first = StudioManagedConfiguration.staleFingerprint(directory: dir)
+        try Data("#!/usr/bin/env node\nconsole.log('the release after');\n".utf8).write(to: entry)
+        XCTAssertNotNil(first); XCTAssertNotEqual(StudioManagedConfiguration.staleFingerprint(directory: dir), first, "another update is synced at once")
         try StudioClientConfiguration.apply(StudioManagedConfiguration.prepare(directory: dir, connection: profile, manifest: manifest, helper: helper, runtimeRoot: runtime, piExecutable: pi), receipt: receipt)
         XCTAssertFalse(StudioManagedConfiguration.bindingStale(directory: dir))
     }

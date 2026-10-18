@@ -131,18 +131,19 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
     public func start() {
         guard task == nil else { return }
         task = Task { [weak self] in
-            var lastStaleSync = Date.distantPast
+            var lastStaleSync = Date.distantPast, lastStale: String?
             while !Task.isCancelled {
                 if let self { await self.synchronizeSavedProfiles() }
                 // Every five minutes, or at once when a Piagent update replaced
                 // the launcher the company binding pins (`piagent studio` waits
-                // for it): checked every five seconds, at most one extra sync a minute.
+                // for it): checked every five seconds; the same stale state
+                // that a sync did not fix (Studio offline) is retried once a minute.
                 let due = Date().addingTimeInterval(TimeInterval(300 + Int.random(in: 0...20)))
                 while !Task.isCancelled, Date() < due {
                     try? await Task.sleep(for: .seconds(5))
                     guard let self else { return }
-                    if Date().timeIntervalSince(lastStaleSync) >= 60,
-                       StudioManagedConfiguration.bindingStale(directory: self.directory(.piagent)) { lastStaleSync = Date(); break }
+                    guard let stale = StudioManagedConfiguration.staleFingerprint(directory: self.directory(.piagent)) else { continue }
+                    if stale != lastStale || Date().timeIntervalSince(lastStaleSync) >= 60 { lastStale = stale; lastStaleSync = Date(); break }
                 }
             }
         }

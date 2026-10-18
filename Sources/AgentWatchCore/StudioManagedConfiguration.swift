@@ -104,12 +104,16 @@ public enum StudioManagedConfiguration {
     /// disk: a Piagent update replaced the launcher (or Node) the binding pins
     /// by hash, so `piagent studio` refuses to start until it is written again.
     /// No binding (no managed key here) is never stale.
-    public static func bindingStale(directory: URL) -> Bool {
+    public static func bindingStale(directory: URL) -> Bool { staleFingerprint(directory: directory) != nil }
+    /// What is on disk when the binding is stale (nil when it matches, or
+    /// there is none): a new value means another update, worth a sync at once.
+    public static func staleFingerprint(directory: URL) -> String? {
         let file = directory.appendingPathComponent("agent-watch-managed.json")
-        guard let data = try? StudioClientConfiguration.read(file), let object = try? StudioClientConfiguration.object(data) else { return false }
+        guard let data = try? StudioClientConfiguration.read(file), let object = try? StudioClientConfiguration.object(data) else { return nil }
         guard let node = object["node"] as? String, let entry = object["entrypoint"] as? String,
-              let nodeHash = object["node_sha256"] as? String, let entryHash = object["entrypoint_sha256"] as? String else { return true }
-        guard let binding = try? StudioRuntimeBinding.resolve(entrypoint: URL(fileURLWithPath: entry), node: URL(fileURLWithPath: node)) else { return true }
-        return binding.interpreterSHA256 != nodeHash || binding.entrypointSHA256 != entryHash
+              let nodeHash = object["node_sha256"] as? String, let entryHash = object["entrypoint_sha256"] as? String else { return "unreadable" }
+        guard let binding = try? StudioRuntimeBinding.resolve(entrypoint: URL(fileURLWithPath: entry), node: URL(fileURLWithPath: node)) else { return "unresolved" }
+        guard binding.interpreterSHA256 != nodeHash || binding.entrypointSHA256 != entryHash else { return nil }
+        return (binding.interpreterSHA256 ?? "") + ":" + binding.entrypointSHA256
     }
 }
