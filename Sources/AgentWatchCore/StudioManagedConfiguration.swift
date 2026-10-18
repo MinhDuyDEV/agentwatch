@@ -113,7 +113,20 @@ public enum StudioManagedConfiguration {
         guard let node = object["node"] as? String, let entry = object["entrypoint"] as? String,
               let nodeHash = object["node_sha256"] as? String, let entryHash = object["entrypoint_sha256"] as? String else { return "unreadable" }
         guard let binding = try? StudioRuntimeBinding.resolve(entrypoint: URL(fileURLWithPath: entry), node: URL(fileURLWithPath: node)) else { return "unresolved" }
-        guard binding.interpreterSHA256 != nodeHash || binding.entrypointSHA256 != entryHash else { return nil }
-        return (binding.interpreterSHA256 ?? "") + ":" + binding.entrypointSHA256
+        if binding.interpreterSHA256 != nodeHash || binding.entrypointSHA256 != entryHash {
+            return (binding.interpreterSHA256 ?? "") + ":" + binding.entrypointSHA256
+        }
+        // An Agent Watch update replaces the broker (this app) the binding pins.
+        // Hash it only when it is newer than the binding: a cheap check every few seconds.
+        guard let broker = object["broker"] as? String, let brokerHash = object["broker_sha256"] as? String else { return "unreadable" }
+        // ctime: when the app was moved into place (Sparkle keeps the build's mtime).
+        let changed = { (path: String) -> Double? in
+            var info = stat(); guard stat(path, &info) == 0 else { return nil }
+            return Double(info.st_ctimespec.tv_sec) + Double(info.st_ctimespec.tv_nsec) / 1e9
+        }
+        guard let brokerChanged = changed(broker), let bindingChanged = changed(file.path), brokerChanged > bindingChanged else { return nil }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: broker)) else { return "unresolved" }
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return hash == brokerHash ? nil : "broker:" + hash
     }
 }

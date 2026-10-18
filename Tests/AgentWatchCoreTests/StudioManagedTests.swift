@@ -312,6 +312,12 @@ private actor ManagedTransport: StudioHTTPTransport {
         try Data("#!/usr/bin/env node\nconsole.log('the release after');\n".utf8).write(to: entry)
         XCTAssertNotNil(first); XCTAssertNotEqual(StudioManagedConfiguration.staleFingerprint(directory: dir), first, "another update is synced at once")
         try StudioClientConfiguration.apply(StudioManagedConfiguration.prepare(directory: dir, connection: profile, manifest: manifest, helper: helper, runtimeRoot: runtime, piExecutable: pi), receipt: receipt)
+        XCTAssertNil(StudioManagedConfiguration.staleFingerprint(directory: dir))
+        // An Agent Watch update replaces the broker the binding pins.
+        Thread.sleep(forTimeInterval: 1.1)
+        try Data("#!/bin/sh\necho next-watch\n".utf8).write(to: helper)
+        XCTAssertNotNil(StudioManagedConfiguration.staleFingerprint(directory: dir), "a replaced broker is stale")
+        try StudioClientConfiguration.apply(StudioManagedConfiguration.prepare(directory: dir, connection: profile, manifest: manifest, helper: helper, runtimeRoot: runtime, piExecutable: pi), receipt: receipt)
         XCTAssertFalse(StudioManagedConfiguration.bindingStale(directory: dir))
     }
     func testNewCompanyKeyTakesOverTheImportOfADisconnectedKey() throws {
