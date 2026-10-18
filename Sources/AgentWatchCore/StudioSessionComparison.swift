@@ -35,7 +35,7 @@ public struct StudioSessionReport: Decodable, Equatable, Sendable {
                   let r = row.usage
                   return r.user_id == identity.user.id && r.provider == provider.rawValue && row.session_digest == digest && row.session_key_family_id != nil &&
                       r.created_at >= from && r.created_at < to && (row.finished_at == nil || row.finished_at! >= r.created_at) &&
-                      ["confirmed", "unresolved", "disputed"].contains(r.accounting_status) &&
+                      StudioUsageStatus.known.contains(r.accounting_status) &&
                       (r.accounting_status == "confirmed" ? r.confirmed.total_tokens == r.charged_tokens : r.confirmed.total_tokens == nil) &&
                       row.native_models.count <= 100 && row.native_models.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 160 })
               }) else { throw StudioError.invalidResponse }

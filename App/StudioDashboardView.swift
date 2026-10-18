@@ -80,6 +80,7 @@ struct StudioDashboardView: View {
         switch value {
         case "confirmed": Image(systemName: "checkmark.circle").foregroundStyle(Claude.live).help("Đã xác nhận").font(.system(size: 11))
         case "disputed": Image(systemName: "exclamationmark.circle").foregroundStyle(Claude.orange).help("Cần đối soát lại").font(.system(size: 11))
+        case "interrupted": Image(systemName: "stop.circle").foregroundStyle(Claude.textMuted).help("Lượt bị ngắt giữa chừng · tính theo usage đã báo").font(.system(size: 11))
         default: Image(systemName: "clock").foregroundStyle(Claude.textMuted).help("Chưa xác nhận").font(.system(size: 11))
         }
     }

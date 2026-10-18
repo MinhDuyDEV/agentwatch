@@ -362,8 +362,10 @@ extension StudioSettingsStorage {
         } catch {
             guard generation == attempt else { return }
             let failure = error as? StudioError ?? .offline
-            let transient = [.offline, .serverUnavailable, .upstreamUnavailable, .rateLimited, .quotaExceeded].contains(failure) || error is CancellationError
-            if !transient {
+            // The key was just verified; only a key or identity problem undoes
+            // that. A report Studio sent that this build cannot read stays a
+            // Usage error and the connection stays verified.
+            if [.invalidKey, .identityChanged, .incompatibleVersion].contains(failure) {
                 clearDashboard(); snapshot = nil; state = .failed; self.error = failure
                 do { try cache.delete(profile: profile) } catch { cacheUnavailable = true }
             }

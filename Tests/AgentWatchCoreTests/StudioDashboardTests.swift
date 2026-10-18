@@ -40,7 +40,9 @@ private actor DashboardTransport: StudioHTTPTransport {
                 body["limit"] = 20; body["offset"] = 0
                 body["requests"] = [
                     ["id": dashboardOrg.uuidString, "user_id": owner, "key_id": dashboardOrg.uuidString, "model_id": dashboardModel.id, "provider": "claude", "accounting_status": "confirmed", "created_at": q["from"]!, "charged_tokens": exactTokens, "confirmed": totals],
-                    ["id": dashboardOwner.uuidString, "user_id": owner, "key_id": dashboardOrg.uuidString, "model_id": dashboardModel.id, "provider": "claude", "accounting_status": "unresolved", "created_at": q["from"]!, "charged_tokens": "0", "confirmed": unknown]]
+                    ["id": dashboardOwner.uuidString, "user_id": owner, "key_id": dashboardOrg.uuidString, "model_id": dashboardModel.id, "provider": "claude", "accounting_status": "unresolved", "created_at": q["from"]!, "charged_tokens": "0", "confirmed": unknown],
+                    // A call cut off early settles on the usage it reported: accounted, never confirmed.
+                    ["id": UUID(uuidString: "00000000-0000-4000-8000-000000000003")!.uuidString, "user_id": owner, "key_id": dashboardOrg.uuidString, "model_id": dashboardModel.id, "provider": "claude", "accounting_status": "interrupted", "created_at": q["from"]!, "charged_tokens": "120", "confirmed": unknown]]
             }
         }
         return StudioHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: body))
@@ -72,6 +74,7 @@ final class StudioDashboardClientTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(result.month.summary.confirmed.total_tokens?.value, exactTokens)
         XCTAssertEqual(result.recent.requests[1].confirmed.total_tokens, nil)
         XCTAssertEqual(result.recent.requests[1].charged_tokens.value, "0")
+        XCTAssertEqual(result.recent.requests[2].accounting_status, "interrupted")
         XCTAssertEqual(result.month.summary.unresolved_requests.value, "2")
         XCTAssertEqual(result.month.summary.disputed_requests.value, "1")
         XCTAssertEqual(result.quota?.windows[0].reserved_tokens.value, "500")
@@ -198,6 +201,18 @@ private actor SuspendedDashboard: StudioReporting {
         await transport.fail("/studio/v1/me/usage", status: 401); await store.refresh()
         XCTAssertNil(store.dashboard); XCTAssertNil(store.snapshot); XCTAssertNil(try cache.load(profile: profile))
         XCTAssertEqual(store.state, .failed); XCTAssertEqual(store.error, .invalidKey)
+    }
+    func testUnreadableReportKeepsTheVerifiedConnection() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let transport = DashboardTransport()
+        let store = StudioConnectionStore(client: DashboardConnection(), keys: DashboardKeys(), settings: DashboardSettings(), reporting: StudioClient(transport: transport), cache: StudioDashboardCache(directory: directory))
+        await store.connect(origin: "https://studio.example", key: dashboardKey)
+        XCTAssertNotNil(store.dashboard)
+        await transport.corruptSource(); await store.refresh()
+        // Usage shows the error; the key and connection stay verified.
+        XCTAssertEqual(store.state, .connected); XCTAssertNotNil(store.snapshot); XCTAssertNil(store.error)
+        XCTAssertEqual(store.dashboardError, .invalidResponse); XCTAssertEqual(store.dashboardState, .stale)
     }
     func testDiskCacheIsPrivateScopedValidatedAndContainsNoCredential() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
