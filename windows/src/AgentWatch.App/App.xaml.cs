@@ -41,6 +41,7 @@ public partial class App : Application
         tray = new TrayIcon(window, () => { tray?.Dispose(); Shutdown(); });
         if (!e.Args.Contains("--background")) window.Show();
         _ = window.RefreshWslBindingAsync();
+        _ = window.WatchWslBindingAsync();
         updates = new UpdateOffer(window);
     }
 

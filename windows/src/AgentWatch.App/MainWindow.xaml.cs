@@ -259,7 +259,35 @@ public partial class MainWindow : Window
     }
     public async Task RefreshWslBindingAsync() => await Refresh();
     async void RefreshConnection(object sender, RoutedEventArgs e) => await Refresh();
-    async Task Refresh() => await RunAsync("Đang kiểm tra lại Studio và Piagent…", async () =>
+
+    // Runs while the app does: a Piagent update in WSL makes the binding stale
+    // and `piagent studio` waits for it, so it is written again within seconds,
+    // through the same path as “Kiểm tra lại”. Skipped while a step runs.
+    public async Task WatchWslBindingAsync()
+    {
+        var watch = new PiagentBindingWatch();
+        while (true)
+        {
+            PiagentWslBinding.Probe? probe = null;
+            try
+            {
+                if (!busy && profiles.Active() is { CredentialMode: StudioCredentialMode.managed } active && keys.Load(active.Id) is not null
+                    && PiagentWslBinding.Remembered() is { Length: > 0 } distro
+                    && await PiagentBindingWatch.RunningDistributionsAsync() is { } running && running.Contains(distro, StringComparer.OrdinalIgnoreCase))
+                {
+                    probe = await PiagentWslBinding.ProbeAsync(new WslExe(), distro, active.Id);
+                    if (!busy && watch.ShouldRebind(probe.Stale, DateTimeOffset.Now))
+                        await Refresh("Piagent trong WSL vừa thay đổi · đang nối lại key công ty…", "Đã nối lại Piagent trong WSL sau bản cập nhật.");
+                }
+            }
+            // WSL not answering is checked again later; a failed rebind already shows its reason.
+            catch (Exception) { }
+            await Task.Delay(PiagentBindingWatch.Next(probe));
+        }
+    }
+
+    Task Refresh() => Refresh("Đang kiểm tra lại Studio và Piagent…", "Đã kiểm tra kết nối Studio và Piagent.");
+    async Task Refresh(string message, string done) => await RunAsync(message, async () =>
     {
         ready = false; ToolBadge.Text = "Chưa xác minh";
         lastCheck = DateTimeOffset.Now.ToString("HH:mm dd/MM/yyyy");
@@ -276,7 +304,7 @@ public partial class MainWindow : Window
                 await Bind(active, key, distro);
                 UpdateConnection(connection);
             }
-            Status.Text = ready ? "Đã kiểm tra kết nối Studio và Piagent." : "Đã xác minh Studio. Mở Thiết lập để kết nối Piagent trong WSL.";
+            Status.Text = ready ? done : "Đã xác minh Studio. Mở Thiết lập để kết nối Piagent trong WSL.";
         }
         catch { UpdateConnection(); throw; }
     });

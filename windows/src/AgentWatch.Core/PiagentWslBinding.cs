@@ -134,6 +134,60 @@ public static class PiagentWslBinding
         return new Result(distro, runtime.Home + "/.pi/agent/agent-watch-managed.json", runtime.Entrypoint, runtime.Node, broker);
     }
 
+    // What a stale-binding check saw: whether a Piagent process runs in the
+    // distribution (check again in seconds) and, when a manual connect would
+    // now write a different binding, a fingerprint of what is installed.
+    public sealed record Probe(bool Active, string? Stale);
+
+    // One cheap read for the background check, writing nothing: the launcher
+    // and Node the runtime file names (resolved, with their SHA-256) next to
+    // the binding. No binding is never stale. The pgrep pattern is bracketed
+    // and the runtime file's name split so this script never matches itself.
+    const string ProbeScript = """
+        set -u
+        d="$HOME/.pi/agent"
+        [ -f "$d/agent-watch-managed.json" ] || { echo "@@none@@"; exit 0; }
+        pgrep -u "$(id -u)" -f '[p]iagent' >/dev/null 2>&1 && echo "@@active@@"
+        p=pi; r="$d/${p}agent-runtime.json"
+        field() { sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$r" 2>/dev/null | head -n 1; }
+        e=$(realpath "$(field entrypoint)" 2>/dev/null) || e=
+        n=$(realpath "$(field node)" 2>/dev/null) || n=
+        echo "@@current@@"; printf '%s\n%s\n' "$e" "$n"
+        [ -n "$e" ] && [ -n "$n" ] && sha256sum "$e" "$n" 2>/dev/null | cut -d ' ' -f 1
+        echo "@@binding@@"; cat "$d/agent-watch-managed.json"
+        echo; echo "@@end@@"
+        """;
+
+    // Only a trigger: a stale result leads to the full BindAsync, which runs
+    // every check a manual connect runs, so this decides nothing it pins.
+    public static async Task<Probe> ProbeAsync(IWsl wsl, string distro, string profileId)
+    {
+        var output = await wsl.RunAsync(distro, null, "sh", "-c", ProbeScript.ReplaceLineEndings("\n"));
+        if (output.Contains("@@none@@", StringComparison.Ordinal)) return new(false, null);
+        var active = output.Contains("@@active@@", StringComparison.Ordinal);
+        string Section(string name)
+        {
+            var start = output.IndexOf($"@@{name}@@", StringComparison.Ordinal);
+            if (start < 0) return "";
+            start += name.Length + 4;
+            var end = output.IndexOf("@@", start, StringComparison.Ordinal);
+            return output[start..(end < 0 ? output.Length : end)].Trim();
+        }
+        if (!output.Contains("@@end@@", StringComparison.Ordinal)) return new(active, "unreadable");
+        JsonObject? binding;
+        try { binding = JsonNode.Parse(Section("binding")) as JsonObject; }
+        catch (JsonException) { binding = null; }
+        string? Text(string name) => binding?[name] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+        if (binding is null) return new(active, "unreadable");
+        if (Text("profile_id") != profileId) return new(active, "profile");
+        var current = Section("current").Split('\n', StringSplitOptions.TrimEntries);
+        if (current.Length != 4 || current.Any(part => part.Length == 0) || current[2].Length != 64 || current[3].Length != 64) return new(active, "unresolved");
+        var (entrypoint, node, entrypointSha256, nodeSha256) = (current[0], current[1], current[2], current[3]);
+        if (Text("entrypoint") == entrypoint && Text("node") == node && Text("entrypoint_sha256") == entrypointSha256 && Text("node_sha256") == nodeSha256)
+            return new(active, null);
+        return new(active, string.Join(':', entrypoint, node, entrypointSha256, nodeSha256));
+    }
+
     // The distribution last bound, kept so a later start of the app (after an
     // update changed agentwatch.exe) writes the binding again.
     public static string RememberedFile => Path.Combine(AgentWatchPaths.DataDirectory, "wsl.json");
