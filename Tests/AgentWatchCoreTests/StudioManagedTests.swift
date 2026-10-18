@@ -264,6 +264,20 @@ private actor ManagedTransport: StudioHTTPTransport {
         try Data("#!/usr/bin/env node\nchanged\n".utf8).write(to: entry)
         XCTAssertThrowsError(try StudioManagedConfiguration.terminal(directory: dir, project: base, profileID: profile.id, launchDirectory: base.appendingPathComponent("launches")))
     }
+    /// A Piagent update replaces the launcher the binding pins: the binding is
+    /// stale (Watch resyncs at once) until it is written again.
+    func testBindingGoesStaleWhenAPiagentUpdateReplacesTheLauncher() throws {
+        let (base, runtime, entry, pi, helper, dir) = try managedRuntime()
+        XCTAssertFalse(StudioManagedConfiguration.bindingStale(directory: dir), "no binding, nothing to resync")
+        let (profile, manifest) = try configuration()
+        let receipt = base.appendingPathComponent("receipt.json")
+        try StudioClientConfiguration.apply(StudioManagedConfiguration.prepare(directory: dir, connection: profile, manifest: manifest, helper: helper, runtimeRoot: runtime, piExecutable: pi), receipt: receipt)
+        XCTAssertFalse(StudioManagedConfiguration.bindingStale(directory: dir))
+        try Data("#!/usr/bin/env node\nconsole.log('next release');\n".utf8).write(to: entry)
+        XCTAssertTrue(StudioManagedConfiguration.bindingStale(directory: dir))
+        try StudioClientConfiguration.apply(StudioManagedConfiguration.prepare(directory: dir, connection: profile, manifest: manifest, helper: helper, runtimeRoot: runtime, piExecutable: pi), receipt: receipt)
+        XCTAssertFalse(StudioManagedConfiguration.bindingStale(directory: dir))
+    }
     func testNewCompanyKeyTakesOverTheImportOfADisconnectedKey() throws {
         let (_, runtime, _, pi, helper, dir) = try managedRuntime()
         let receipt = StudioManagedConfiguration.receiptURL(directory: dir)

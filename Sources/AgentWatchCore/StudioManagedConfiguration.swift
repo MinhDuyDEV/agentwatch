@@ -100,4 +100,16 @@ public enum StudioManagedConfiguration {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: target.path)
         return StudioTerminalCommand(url: target)
     }
+    /// Whether the Piagent binding in `directory` no longer matches what is on
+    /// disk: a Piagent update replaced the launcher (or Node) the binding pins
+    /// by hash, so `piagent studio` refuses to start until it is written again.
+    /// No binding (no managed key here) is never stale.
+    public static func bindingStale(directory: URL) -> Bool {
+        let file = directory.appendingPathComponent("agent-watch-managed.json")
+        guard let data = try? StudioClientConfiguration.read(file), let object = try? StudioClientConfiguration.object(data) else { return false }
+        guard let node = object["node"] as? String, let entry = object["entrypoint"] as? String,
+              let nodeHash = object["node_sha256"] as? String, let entryHash = object["entrypoint_sha256"] as? String else { return true }
+        guard let binding = try? StudioRuntimeBinding.resolve(entrypoint: URL(fileURLWithPath: entry), node: URL(fileURLWithPath: node)) else { return true }
+        return binding.interpreterSHA256 != nodeHash || binding.entrypointSHA256 != entryHash
+    }
 }
