@@ -31,6 +31,28 @@ public enum StudioInstallLocations {
         [".npm-global", ".npm-packages", ".volta/tools/image/packages/" + package].map { home.appendingPathComponent($0, isDirectory: true) }
     }
 
+    /// Pi hosts Agent Watch has been checked against. Piagent pins one of
+    /// them (its peer dependency); the host it pins wins (`pinnedPiVersion`).
+    public static let supportedPiVersions: Set<String> = ["0.87.1", "1.3.0"]
+
+    /// The Pi host version the Piagent install at `root` pins, when it is one
+    /// Agent Watch supports (Piagent 1.33+ pins 1.3.0, earlier 0.87.1).
+    public static func pinnedPiVersion(piagentRoot root: URL) -> String? {
+        guard let data = try? Data(contentsOf: root.appendingPathComponent("package.json")),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let peers = object["peerDependencies"] as? [String: Any],
+              let version = peers["@earendil-works/pi-coding-agent"] as? String,
+              supportedPiVersions.contains(version) else { return nil }
+        return version
+    }
+
+    /// Whether a Pi host at `root` is one Agent Watch supports, and, when a
+    /// Piagent pin is known, the pinned one.
+    public static func acceptsPi(_ root: URL, pinned: String?) -> Bool {
+        guard let version = packageField(root, "version"), supportedPiVersions.contains(version) else { return false }
+        return pinned == nil || version == pinned
+    }
+
     static func packageField(_ root: URL, _ key: String) -> String? {
         guard let data = try? Data(contentsOf: root.appendingPathComponent("package.json")),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }

@@ -67,7 +67,7 @@ public partial class MainWindow : Window
         InvalidOperationException invalid => invalid.Message switch
         {
             "wsl-runtime-unreadable" or "wsl-runtime-invalid" => "Chưa thấy Piagent hợp lệ trong WSL. Chạy trình thiết lập ở bước 3 rồi kiểm tra lại.",
-            "wsl-runtime-unsupported" => "Piagent hoặc Pi trong WSL chưa tương thích (cần Pi 0.87.1). Cập nhật Piagent rồi thử lại.",
+            "wsl-runtime-unsupported" => "Piagent hoặc Pi trong WSL chưa tương thích (cần đúng bản Pi mà Piagent ghim). Cập nhật Piagent rồi thử lại.",
             "wsl-root-user" => "Ubuntu đang dùng root. Chạy lại trình thiết lập để đặt tài khoản Linux của bạn rồi kiểm tra lại.",
             "wsl-timeout" => "WSL không phản hồi sau 2 phút. Mở Ubuntu để hoàn tất thiết lập rồi thử lại.",
             _ => "Chưa kiểm tra được WSL2, tài khoản Linux hoặc sandbox. Mở Ubuntu và chạy trình thiết lập để xem bước cần sửa.",

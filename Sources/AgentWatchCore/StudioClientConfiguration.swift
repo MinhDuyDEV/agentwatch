@@ -167,20 +167,23 @@ public enum StudioClientConfiguration {
     /// The Pi host, wherever the member's npm installed it; the qualified
     /// version wins when several are installed.
     public static func piExecutable(home: URL = FileManager.default.homeDirectoryForCurrentUser,
-                                    system: [URL] = ["/opt/homebrew", "/usr/local"].map { URL(fileURLWithPath: $0) }) throws -> URL {
+                                    system: [URL] = ["/opt/homebrew", "/usr/local"].map { URL(fileURLWithPath: $0) },
+                                    prefer: String? = nil) throws -> URL {
         let prefixes = [home.appendingPathComponent(".pi/npm-global"), home.appendingPathComponent(".local")] + system
             + StudioInstallLocations.userPrefixes(home: home, package: "@earendil-works/pi-coding-agent") + StudioInstallLocations.versionManagedPrefixes(home: home)
         let found = prefixes.map { $0.appendingPathComponent("bin/pi") }.filter { FileManager.default.isExecutableFile(atPath: $0.path) }
         let root = { (pi: URL) in pi.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
-        guard let pi = found.first(where: { StudioInstallLocations.packageField(root($0), "version") == "0.87.1" }) ?? found.first else { throw StudioConfigurationError.missingCatalog }
+        let version = { (pi: URL) in StudioInstallLocations.packageField(root(pi), "version") ?? "" }
+        guard let pi = found.first(where: { prefer != nil && version($0) == prefer })
+                ?? found.first(where: { StudioInstallLocations.supportedPiVersions.contains(version($0)) }) ?? found.first else { throw StudioConfigurationError.missingCatalog }
         return pi
     }
     public static func catalogModel(for model: StudioModel, piExecutable: URL) throws -> Data {
         let cli = piExecutable.resolvingSymlinksInPath()
-        // Tested Pi 0.87 layout; refuse guesses for another package layout.
+        // Tested Pi layouts (0.87.1, 1.3.0: pi-ai's catalog nested in the
+        // host); refuse guesses for another version's layout.
         let root = cli.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let package = try object(read(root.appendingPathComponent("package.json")))
-        guard package["version"] as? String == "0.87.1" else { throw StudioConfigurationError.missingCatalog }
+        guard StudioInstallLocations.acceptsPi(root, pinned: nil) else { throw StudioConfigurationError.missingCatalog }
         let provider = model.ownedBy == "claude" ? "anthropic" : "openai-codex"
         let file = root.appendingPathComponent("node_modules/@earendil-works/pi-ai/dist/providers/data/\(provider).json")
         let catalog = try object(read(file))

@@ -17,5 +17,8 @@ sealed class TrayIcon : IDisposable
         icon.DoubleClick += (_, _) => window.ShowFront();
     }
 
+    // A Piagent conversation waits on the member, or its turn ended (PiagentStatusWatch).
+    public void Notify(string title, string text) => icon.ShowBalloonTip(8000, title, text, ToolTipIcon.Info);
+
     public void Dispose() { icon.Visible = false; icon.Dispose(); }
 }

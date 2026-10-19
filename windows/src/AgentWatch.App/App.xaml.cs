@@ -42,6 +42,7 @@ public partial class App : Application
         if (!e.Args.Contains("--background")) window.Show();
         _ = window.RefreshWslBindingAsync();
         _ = window.WatchWslBindingAsync();
+        _ = PiagentStatusWatch.RunAsync(alert => Dispatcher.BeginInvoke(() => tray?.Notify(alert.Heading, alert.Company ? alert.Line + " · công ty" : alert.Line)));
         updates = new UpdateOffer(window);
     }
 

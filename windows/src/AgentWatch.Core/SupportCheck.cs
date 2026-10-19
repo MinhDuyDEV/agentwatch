@@ -82,7 +82,7 @@ public static partial class SupportCheck
         InvalidOperationException invalid => invalid.Message switch
         {
             "wsl-runtime-unreadable" or "wsl-runtime-invalid" => "Chưa thấy Piagent trong WSL: chạy lại lệnh cài. [" + invalid.Message + "]",
-            "wsl-runtime-unsupported" => "Piagent hoặc Pi trong WSL chưa đúng bản (cần Pi 0.87.1): chạy `piagent-update` trong Ubuntu. [wsl-runtime-unsupported]",
+            "wsl-runtime-unsupported" => "Piagent hoặc Pi trong WSL chưa đúng bản (cần đúng bản Pi mà Piagent ghim): chạy `piagent-update` trong Ubuntu. [wsl-runtime-unsupported]",
             "wsl-root-user" => "Ubuntu đang mở bằng root: chạy lại lệnh cài để đặt tài khoản Linux. [wsl-root-user]",
             "wsl-timeout" => "WSL không trả lời sau 2 phút: mở Ubuntu một lần, hoặc chạy `wsl --shutdown` rồi thử lại. [wsl-timeout]",
             _ => $"[{invalid.Message}]",

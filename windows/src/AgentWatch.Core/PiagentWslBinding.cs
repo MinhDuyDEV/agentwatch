@@ -90,6 +90,15 @@ public static class PiagentWslBinding
         id -un
         """;
 
+    // Pi hosts Agent Watch was checked against; the one the installed Piagent
+    // pins wins (Piagent 1.33+ pins 1.3.0, earlier 0.87.1).
+    public static readonly IReadOnlySet<string> SupportedPiVersions = new HashSet<string> { "0.87.1", "1.3.0" };
+    public static bool AcceptsPi(string version, string pinned)
+    {
+        var want = pinned == "-" || pinned.Length == 0 ? "0.87.1" : pinned;
+        return SupportedPiVersions.Contains(version) && version == want;
+    }
+
     public static async Task<Runtime> InspectAsync(IWsl wsl, string? distro = null)
     {
         distro ??= (await wsl.RunAsync(null, null, "sh", "-c", "printf %s \"$WSL_DISTRO_NAME\"")).Trim();
@@ -106,10 +115,12 @@ public static class PiagentWslBinding
         if (runtime?["schema_version"]?.GetValue<int>() != 1) throw new InvalidOperationException("wsl-runtime-invalid");
         var (entrypoint, node, sdk) = (Path("entrypoint"), Path("node"), Path("pi_sdk_root"));
         // Real paths, digests and the Pi host's version, read inside WSL.
+        // The last line is the Pi host the installed Piagent pins (its peer
+        // dependency; "-" when it names none: Piagent before 1.33 pinned 0.87.1).
         var facts = (await wsl.RunAsync(distro, null, "sh", "-c",
-            "set -eu; e=$(realpath \"$1\"); n=$(realpath \"$2\"); s=$(realpath \"$3\"); printf '%s\\n%s\\n%s\\n' \"$e\" \"$n\" \"$s\"; sha256sum \"$e\" \"$n\" | cut -d ' ' -f 1; \"$n\" -p 'require(process.argv[1]).version' \"$s/package.json\"",
+            "set -eu; e=$(realpath \"$1\"); n=$(realpath \"$2\"); s=$(realpath \"$3\"); printf '%s\\n%s\\n%s\\n' \"$e\" \"$n\" \"$s\"; sha256sum \"$e\" \"$n\" | cut -d ' ' -f 1; \"$n\" -p 'require(process.argv[1]).version' \"$s/package.json\"; \"$n\" -p '((require(process.argv[1]).peerDependencies||{})[\"@earendil-works/pi-coding-agent\"])||\"-\"' \"$(dirname \"$(dirname \"$e\")\")/package.json\"",
             "piagent-binding", entrypoint, node, sdk)).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (facts.Length != 6 || !facts[0].EndsWith("/scripts/piagent-studio.mjs", StringComparison.Ordinal) || facts[5] != "0.87.1"
+        if (facts.Length != 7 || !facts[0].EndsWith("/scripts/piagent-studio.mjs", StringComparison.Ordinal) || !AcceptsPi(facts[5], facts[6])
             || facts[3].Length != 64 || facts[4].Length != 64) throw new InvalidOperationException("wsl-runtime-unsupported");
         return new Runtime(distro, user, home, facts[0], facts[1], facts[2], facts[3], facts[4], facts[5]);
     }

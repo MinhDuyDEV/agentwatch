@@ -294,7 +294,7 @@ sealed class FakeWsl : IWsl
         {
             _ when script.Contains("WSL_DISTRO_NAME") => "Ubuntu",
             _ when script.Contains("piagent-runtime.json") => "{\"schema_version\":1,\"entrypoint\":\"/home/dev/.local/lib/node_modules/@piagent/platform/scripts/piagent-studio.mjs\",\"node\":\"/usr/bin/node\",\"pi_sdk_root\":\"/home/dev/.pi/sdk\"}\n--home--\n/home/dev\n--user--\ndev\n",
-            _ when script.Contains("sha256sum") => "/home/dev/.local/lib/node_modules/@piagent/platform/scripts/piagent-studio.mjs\n/usr/bin/node\n/home/dev/.pi/sdk\n" + new string('e', 64) + "\n" + new string('f', 64) + "\n0.87.1\n",
+            _ when script.Contains("sha256sum") => "/home/dev/.local/lib/node_modules/@piagent/platform/scripts/piagent-studio.mjs\n/usr/bin/node\n/home/dev/.pi/sdk\n" + new string('e', 64) + "\n" + new string('f', 64) + "\n0.87.1\n-\n",
             _ when command[0] == "wslpath" => "/mnt/c/Users/dev/AppData/Local/AgentWatch/agentwatch.exe\n",
             _ => "",
         });
@@ -337,5 +337,59 @@ public class WslBindingTests
         Assert.Null(StudioManagedBroker.RefusalCode(Encoding.UTF8.GetBytes("not json")));
         Assert.Equal("MacBook%20c%E1%BB%A7a%20V%C5%A9", StudioManagedBroker.MachineName(" MacBook của Vũ\n"));
         Assert.Null(StudioManagedBroker.MachineName("  "));
+    }
+}
+
+public class PiHostPinTests
+{
+    // The Pi host the installed Piagent pins is the one accepted (1.3.0 for
+    // Piagent 1.33+, 0.87.1 when it names none); never an unchecked one.
+    [Theory]
+    [InlineData("0.87.1", "-", true)]
+    [InlineData("1.3.0", "1.3.0", true)]
+    [InlineData("0.87.1", "1.3.0", false)]
+    [InlineData("1.3.0", "-", false)]
+    [InlineData("9.9.9", "9.9.9", false)]
+    public void AcceptsOnlyThePinnedCheckedHost(string version, string pinned, bool accepted) =>
+        Assert.Equal(accepted, PiagentWslBinding.AcceptsPi(version, pinned));
+}
+
+public class PiagentStatusTests
+{
+    static PiagentStatus S(string id, string state, string? kind = null, string? ended = null, string at = "2026-10-20T01:00:00Z") =>
+        new(id, "Fix refunds", "shop", true, state, kind, ended, 0, at, at);
+
+    [Fact]
+    public void ReadsNewestAcrossFoldersAndSkipsBadFiles()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "piagent-status-" + Guid.NewGuid());
+        foreach (var folder in new[] { "dashboard", "company" }) Directory.CreateDirectory(Path.Combine(dir, "status", folder));
+        void Write(string folder, string name, PiagentStatus value) => File.WriteAllText(Path.Combine(dir, "status", folder, name + ".json"),
+            System.Text.Json.JsonSerializer.Serialize(value));
+        Write("dashboard", "a", S("a", "working", at: "2026-10-20T01:00:00Z"));
+        Write("company", "a", S("a", "blocked", "permission", at: "2026-10-20T01:00:05Z"));
+        Write("company", "b", S("b", "done", ended: "done", at: "2026-10-20T00:59:00Z"));
+        File.WriteAllText(Path.Combine(dir, "status", "company", "c.json"), "not json");
+        File.WriteAllText(Path.Combine(dir, "status", "company", "d.json"), new string(' ', 20_000));
+        var list = PiagentStatusReader.Read(dir);
+        Assert.Equal(["a", "b"], list.Select(s => s.Conversation));
+        Assert.Equal("permission", list[0].Kind);
+        Directory.Delete(dir, true);
+    }
+
+    [Fact]
+    public void AlertsOnWaitingAndOnEndings()
+    {
+        var tracker = new PiagentStatusTracker();
+        Assert.Equal([PiagentAlertKind.Question], tracker.Update([S("a", "done", ended: "done"), S("b", "blocked", "question")]).Select(a => a.Kind));
+        Assert.Empty(tracker.Update([S("a", "working"), S("b", "blocked", "question")]));
+        Assert.Equal([PiagentAlertKind.Approval], tracker.Update([S("a", "blocked", "permission"), S("b", "working")]).Select(a => a.Kind));
+        var ends = tracker.Update([S("a", "done", ended: "done"), S("b", "done", ended: "stopped")]);
+        Assert.Equal([PiagentAlertKind.Done, PiagentAlertKind.Stopped], ends.Select(a => a.Kind));
+        Assert.Equal("Fix refunds · shop", ends[0].Line);
+        Assert.Empty(tracker.Update([S("a", "working")]));
+        Assert.Equal([PiagentAlertKind.Failed], tracker.Update([S("a", "error", ended: "failed")]).Select(a => a.Kind));
+        Assert.Equal(["Agent cần bạn đăng nhập"], tracker.Update([S("a", "blocked", "auth")]).Select(a => a.Heading));
+        Assert.Equal(["a"], tracker.Waiting().Select(s => s.Conversation));
     }
 }

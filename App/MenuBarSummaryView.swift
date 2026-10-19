@@ -10,6 +10,7 @@ struct MenuBarSummaryView: View {
     @Environment(PiAgentLivePoller.self) private var piAgent
     @Environment(SupervisorLockStore.self) private var supervisorLock
     @Environment(StudioConnectionStore.self) private var studio
+    @Environment(NotificationService.self) private var notifications
     @Environment(\.openWindow) private var openWindow
 
     private var hasAnySnapshot: Bool {
@@ -22,6 +23,10 @@ struct MenuBarSummaryView: View {
             Divider().background(Claude.border)
             if studio.profile != nil {
                 studioBlock
+                Divider().background(Claude.border)
+            }
+            if !notifications.piagentWaiting.isEmpty {
+                piagentWaitingBlock
                 Divider().background(Claude.border)
             }
             lockBlock
@@ -398,6 +403,27 @@ private struct MenuLiveDetail {
             return "~" + TokenFormatter.usd(cost)
         case .unavailable:
             return "—"
+        }
+    }
+}
+
+// Piagent conversations waiting on the member (Piagent 1.34+, NotificationService).
+extension MenuBarSummaryView {
+    var piagentWaitingBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Đang chờ bạn")
+                .font(ClaudeFont.body(12).weight(.semibold))
+            ForEach(notifications.piagentWaiting, id: \.conversation) { item in
+                HStack(spacing: 6) {
+                    Image(systemName: item.kind == "permission" ? "hand.raised" : item.kind == "auth" ? "key" : "questionmark.bubble")
+                        .foregroundStyle(Claude.orange)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(item.title).font(ClaudeFont.body(12)).lineLimit(1)
+                        Text("\(item.kind == "permission" ? "Chờ duyệt" : item.kind == "auth" ? "Cần đăng nhập" : "Đang hỏi") · \(item.project)")
+                            .font(ClaudeFont.body(11)).foregroundStyle(Claude.textMuted).lineLimit(1)
+                    }
+                }
+            }
         }
     }
 }

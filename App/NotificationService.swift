@@ -1,6 +1,9 @@
 // Delivers native macOS notifications for significant session events:
 //   - "Agent done"    when a subagent transitions live → completed
 //   - "Spend update"  when session cost crosses an integer-dollar threshold
+//   - Piagent conversations (Piagent 1.34+): one waits for the member's
+//     approval, answer or sign-in, or its turn ended (done, stopped, failed),
+//     read every 2 s from ~/.pi/agent/status (AgentWatchCore/PiagentStatus).
 
 import Foundation
 import UserNotifications
@@ -28,8 +31,32 @@ final class NotificationService {
 
     // MARK: - Init
 
+    /// Piagent conversations waiting on the member now (menu bar summary).
+    private(set) var piagentWaiting: [PiagentStatus] = []
+    @ObservationIgnored private var piagentTracker = PiagentStatusTracker()
+    @ObservationIgnored private var piagentTimer: Timer?
+
     init() {
         requestAuthorization()
+        startPiagentStatus()
+    }
+
+    private func startPiagentStatus() {
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.readPiagentStatus() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        piagentTimer = timer
+    }
+
+    private func readPiagentStatus() {
+        let list = PiagentStatusReader.read()
+        for alert in piagentTracker.update(list) {
+            post(title: alert.heading, subtitle: alert.company ? "Cuộc trò chuyện công ty" : nil, body: alert.line,
+                 identifier: "piagent-\(alert.conversation)-\(alert.kind.rawValue)")
+        }
+        let waiting = piagentTracker.waiting()
+        if waiting != piagentWaiting { piagentWaiting = waiting }
     }
 
     // MARK: - Public

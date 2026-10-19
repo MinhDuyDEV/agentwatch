@@ -69,10 +69,11 @@ public enum StudioManagedConfiguration {
         let binding = try StudioRuntimeBinding.resolve(entrypoint: root.appendingPathComponent("scripts/piagent-studio.mjs"), nodeCandidates: nodes)
         guard let node = binding.interpreter else { throw StudioCLIError.runtimeMissing }
         let sdk: URL
-        if explicitPi == nil, let host = registered?.sdk, StudioInstallLocations.packageField(host, "version") == "0.87.1" { sdk = host.resolvingSymlinksInPath() }
-        else { sdk = try (explicitPi ?? StudioClientConfiguration.piExecutable()).resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
-        let package = try StudioClientConfiguration.object(StudioClientConfiguration.read(sdk.appendingPathComponent("package.json")))
-        guard package["version"] as? String == "0.87.1", helper.isFileURL,
+        // The Pi host this Piagent pins (0.87.1 before Piagent 1.33, 1.3.0 since).
+        let pinned = StudioInstallLocations.pinnedPiVersion(piagentRoot: root) ?? "0.87.1"
+        if explicitPi == nil, let host = registered?.sdk, StudioInstallLocations.acceptsPi(host, pinned: pinned) { sdk = host.resolvingSymlinksInPath() }
+        else { sdk = try (explicitPi ?? StudioClientConfiguration.piExecutable(prefer: pinned)).resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
+        guard StudioInstallLocations.acceptsPi(sdk, pinned: pinned), helper.isFileURL,
               FileManager.default.isExecutableFile(atPath: helper.path) else { throw StudioCLIError.unsupportedVersion }
         let broker = helper.resolvingSymlinksInPath()
         let brokerHash = SHA256.hash(data: try Data(contentsOf: broker)).map { String(format: "%02x", $0) }.joined()

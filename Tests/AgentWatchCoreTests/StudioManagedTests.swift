@@ -297,6 +297,30 @@ private actor ManagedTransport: StudioHTTPTransport {
         try Data("#!/usr/bin/env node\nchanged\n".utf8).write(to: entry)
         XCTAssertThrowsError(try StudioManagedConfiguration.terminal(directory: dir, project: base, profileID: profile.id, launchDirectory: base.appendingPathComponent("launches")))
     }
+    /// The Pi host the installed Piagent pins is the one the import accepts:
+    /// 1.3.0 for Piagent 1.33+, 0.87.1 before (no pin read); never a host the
+    /// Piagent does not pin, nor one Agent Watch was not checked against.
+    func testManagedImportAcceptsThePiHostPiagentPins() throws {
+        let (_, runtime, _, pi, helper, dir) = try managedRuntime()
+        let sdk = pi.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let (profile, manifest) = try configuration()
+        let prepare = { try StudioManagedConfiguration.prepare(directory: dir, connection: profile, manifest: manifest, helper: helper, runtimeRoot: runtime, piExecutable: pi) }
+        let write = { (file: URL, json: String) in try Data(json.utf8).write(to: file) }
+        // Piagent 1.33: pins Pi 1.3.0.
+        try write(runtime.appendingPathComponent("package.json"), #"{"name":"@piagent/platform","version":"1.33.0","peerDependencies":{"@earendil-works/pi-coding-agent":"1.3.0"}}"#)
+        XCTAssertThrowsError(try prepare(), "Pi 0.87.1 under a Piagent that pins 1.3.0") { XCTAssertEqual($0 as? StudioCLIError, .unsupportedVersion) }
+        try write(sdk.appendingPathComponent("package.json"), #"{"version":"1.3.0"}"#)
+        XCTAssertNoThrow(try prepare())
+        XCTAssertEqual(StudioInstallLocations.pinnedPiVersion(piagentRoot: runtime), "1.3.0")
+        // A pin Agent Watch was not checked against is refused.
+        try write(runtime.appendingPathComponent("package.json"), #"{"name":"@piagent/platform","version":"9.0.0","peerDependencies":{"@earendil-works/pi-coding-agent":"9.9.9"}}"#)
+        try write(sdk.appendingPathComponent("package.json"), #"{"version":"9.9.9"}"#)
+        XCTAssertThrowsError(try prepare()) { XCTAssertEqual($0 as? StudioCLIError, .unsupportedVersion) }
+        // An older Piagent without the pin readable: 0.87.1 as before.
+        try FileManager.default.removeItem(at: runtime.appendingPathComponent("package.json"))
+        try write(sdk.appendingPathComponent("package.json"), #"{"version":"0.87.1"}"#)
+        XCTAssertNoThrow(try prepare())
+    }
     /// A Piagent update replaces the launcher the binding pins: the binding is
     /// stale (Watch resyncs at once) until it is written again.
     func testBindingGoesStaleWhenAPiagentUpdateReplacesTheLauncher() throws {

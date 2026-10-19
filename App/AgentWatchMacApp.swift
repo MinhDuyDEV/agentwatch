@@ -139,6 +139,7 @@ struct AgentWatchMacApp: App {
         MenuBarExtra {
             MenuBarSummaryView()
                 .environment(studio)
+                .environment(notifications)
                 .environment(watcher)
                 .environment(projectStore)
                 .environment(appearance)
