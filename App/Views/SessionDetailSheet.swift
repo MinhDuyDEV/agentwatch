@@ -17,6 +17,9 @@ struct SessionDetailSheet: View {
     @State private var toolFilter: String = ""   // "" = all, else specific tool/kind
     @State private var showAliasEditor: Bool = false
     @State private var aliasDraft: String = ""
+    @State private var memory: PiSessionMemory?
+    @State private var served: MemoryServed?
+    @State private var showBrief = false
     private let pageSize: Int = 30
 
     /// Events sau khi reverse + áp filter: mới nhất ở đầu.
@@ -101,6 +104,7 @@ struct SessionDetailSheet: View {
                     VStack(alignment: .leading, spacing: 16) {
                         overviewCard
                         tokenBreakdownCard
+                        if let memory, !memory.briefs.isEmpty { memoryCard(memory) }
                         if !toolBreakdown.isEmpty { toolsCard }
                         if !events.isEmpty { eventsCard }
                     }
@@ -162,6 +166,50 @@ struct SessionDetailSheet: View {
             self.stats = s
             self.loading = false
         }
+        if session.source == .piagent { await loadMemory(url) }
+    }
+
+    /// The briefs Piagent kept in the session, and (with a direct Studio key)
+    /// how members rated what memory handed this conversation.
+    private func loadMemory(_ url: URL) async {
+        let found = await Task.detached(priority: .utility) { PiSessionMemoryReader.read(url) }.value
+        memory = found
+        guard !found.briefs.isEmpty, let id = found.sessionID, let cwd = found.cwd,
+              let profile = try? StudioPreferences(defaults: StudioPreferences.applicationDefaults).load(), profile.credentialMode == .direct,
+              let key = StudioCredentialCommand.savedKey(profileID: profile.id) else { return }
+        let repo = await Task.detached(priority: .utility) { MemorySignals.repoKey(directory: cwd) }.value
+        guard let repo else { return }
+        served = await MemorySignalClient().served(origin: profile.origin, key: key, repoKey: repo, conversation: id)
+    }
+
+    // MARK: - Team memory
+
+    private func memoryCard(_ memory: PiSessionMemory) -> some View {
+        let latest = memory.briefs.last!
+        return VStack(alignment: .leading, spacing: 8) {
+            SectionLabel(text: "Team memory đã đưa cho agent")
+            Text("\(memory.briefs.count) brief · \(latest.facts) ghi chú trong brief gần nhất")
+                .font(ClaudeFont.body(12))
+            if let served {
+                let wrong = served.items.filter(\.leftOut).count
+                Text("Studio: \(served.serves) lần đưa (brief và memory_search) · \(served.rated) lần đã được chấm từ lời member\(wrong > 0 ? " · \(wrong) ghi chú member báo sai hoặc đã cũ, brief sau không đưa nữa" : "")\(served.judging ? "" : " · bộ chấm memory đang tắt")")
+                    .font(ClaudeFont.body(11)).foregroundStyle(wrong > 0 ? Claude.orange : Claude.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(served.items.filter { $0.kind == "rule" }, id: \.id) { rule in
+                    Text("Luật \u{201C}\(rule.title ?? rule.id)\u{201D}: đưa \(rule.times) lần · giúp \(rule.helpful) · sai \(rule.harmful) · cũ \(rule.outdated)")
+                        .font(ClaudeFont.body(11)).foregroundStyle(Claude.textMuted)
+                }
+            }
+            DisclosureGroup(isExpanded: $showBrief) {
+                Text(String(latest.text.prefix(4000)))
+                    .font(ClaudeFont.body(11)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            } label: {
+                Text("Xem brief gần nhất").font(ClaudeFont.body(11))
+            }
+        }
+        .claudeCard()
     }
 
     // MARK: - Header

@@ -13,6 +13,7 @@ struct StudioToolsTab: View {
         StudioColumns {
             StudioConfigurationView(sync: sync)
             StudioLauncherView()
+            MemorySignalsCard()
         } trailing: {
             quota
             models
@@ -80,6 +81,33 @@ struct StudioToolsTab: View {
                 Text("Chưa kiểm tra.").font(ClaudeFont.body(12)).foregroundStyle(Claude.textMuted)
             } }
         }.studioCard(padding: 12)
+    }
+}
+
+/// Team memory signals (MemorySignals.swift): the member chooses whether
+/// their corrections to Claude Code and Codex go to their team's memory.
+struct MemorySignalsCard: View {
+    @Environment(StudioConnectionStore.self) private var studio
+    @State private var service = MemorySignalService.shared
+
+    var body: some View {
+        let direct = studio.profile?.credentialMode == .direct
+        VStack(alignment: .leading, spacing: 6) {
+            SectionLabel(text: "Team memory")
+            Toggle(isOn: Binding(get: { direct && service.enabled }, set: { service.enabled = $0 })) {
+                Text("Gửi lời sửa agent lên team memory").font(ClaudeFont.body(13))
+            }.toggleStyle(.checkbox).disabled(!direct)
+            Text("Khi bạn sửa Claude Code hoặc Codex (\u{201C}đừng…\u{201D}, \u{201C}từ giờ luôn…\u{201D}, \u{201C}sai rồi, phải…\u{201D}), Agent Watch gửi đúng câu đó (đã ẩn thông tin xác thực, tối đa 1.000 ký tự) lên Studio của bạn. Studio không lưu câu chữ; admin team có thể duyệt nó thành luật. Hội thoại Piagent đã tự gửi nên không gửi lại.")
+                .font(ClaudeFont.body(11)).foregroundStyle(Claude.textMuted).fixedSize(horizontal: false, vertical: true)
+            if !direct {
+                Text("Cần kết nối bằng key trực tiếp (key CLI).").font(ClaudeFont.body(11)).foregroundStyle(Claude.textMuted)
+            } else if service.enabled, let at = service.lastRun {
+                Text(service.note.isEmpty ? "Lần quét \(StudioFormat.time(at)): đã gửi \(service.lastSent)." : service.note)
+                    .font(ClaudeFont.body(11)).foregroundStyle(service.note.isEmpty ? Claude.textMuted : Claude.orange)
+            }
+        }
+        .studioCard(padding: 12)
+        .onAppear { service.start() }
     }
 }
 

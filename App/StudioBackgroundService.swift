@@ -31,6 +31,8 @@ import AgentWatchCore
             }
         }
         StudioSyncStore.shared.start()
+        // Off unless the member turned it on (MemorySignals.swift).
+        MemorySignalService.shared.start()
         if monitor == nil {
             let path = NWPathMonitor(); monitor = path
             path.pathUpdateHandler = { update in
