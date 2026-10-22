@@ -5,7 +5,7 @@ public enum StudioCLIPreflight {
     /// Bulk configuration must not install a catalog schema into an unqualified CLI.
     /// The version probe receives no employee key and does not send inference.
     public static func verifyVersion(_ executable: StudioCLIExecutable) async throws {
-        guard try await installedVersion(executable) == executable.provider.qualifiedVersion else { throw StudioCLIError.unsupportedVersion }
+        guard executable.provider.isQualified(try await installedVersion(executable)) else { throw StudioCLIError.unsupportedVersion }
     }
     /// Raw `--version` output, trimmed; one short process, no network.
     public static func installedVersion(_ executable: StudioCLIExecutable) async throws -> String {
@@ -26,9 +26,12 @@ public enum StudioCLIPreflight {
     }
 
     /// Every probe uses the managed profile and receives no employee credential.
-    public static func verify(_ plan: StudioCLILaunchPlan) async throws {
-        let version = try await capture(plan, arguments: ["--version"])
-        guard String(data: version, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == plan.profile.provider.qualifiedVersion else {
+    /// Returns the qualified `--version` output the CLI reported.
+    @discardableResult
+    public static func verify(_ plan: StudioCLILaunchPlan) async throws -> String {
+        let raw = try await capture(plan, arguments: ["--version"])
+        guard let version = String(data: raw, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              plan.profile.provider.isQualified(version) else {
             throw StudioCLIError.unsupportedVersion
         }
         if plan.profile.provider == .claude {
@@ -40,9 +43,10 @@ public enum StudioCLIPreflight {
             let help = String(decoding: try await capture(plan, arguments: ["--help"]), as: UTF8.self)
             guard ["--bare", "--setting-sources", "--strict-mcp-config", "--permission-mode"].allSatisfy(help.contains) else { throw StudioCLIError.unsupportedVersion }
         } else {
-            let raw = try await codexConfiguration(plan)
-            try validateCodexConfiguration(raw, plan: plan)
+            let config = try await codexConfiguration(plan)
+            try validateCodexConfiguration(config, plan: plan)
         }
+        return version
     }
 
     static func validateCodexConfiguration(_ data: Data, plan: StudioCLILaunchPlan) throws {

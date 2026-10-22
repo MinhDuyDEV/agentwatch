@@ -88,8 +88,12 @@ final class StudioCLITests: XCTestCase, @unchecked Sendable {
     }
     func testActualNativeCLIConfigurationPreflight() async throws {
         guard ProcessInfo.processInfo.environment["STUDIO_TEST_NATIVE_CLI"] == "1" else { throw XCTSkip("opt in to installed standalone CLI checks") }
-        for provider in StudioCLIProvider.allCases {
-            let root = try temporary(), value = try plan(provider, root: root, binary: URL(fileURLWithPath: "/opt/homebrew/bin/\(provider.rawValue)"))
+        // STUDIO_TEST_NATIVE_CLI_PROVIDERS=codex and STUDIO_TEST_CODEX_BIN=… qualify one installed CLI.
+        let env = ProcessInfo.processInfo.environment
+        let only = env["STUDIO_TEST_NATIVE_CLI_PROVIDERS"].map { Set($0.split(separator: ",").map(String.init)) }
+        for provider in StudioCLIProvider.allCases where only?.contains(provider.rawValue) ?? true {
+            let binary = env["STUDIO_TEST_\(provider.rawValue.uppercased())_BIN"] ?? "/opt/homebrew/bin/\(provider.rawValue)"
+            let root = try temporary(), value = try plan(provider, root: root, binary: URL(fileURLWithPath: binary))
             do { try await StudioCLIPreflight.verify(value) }
             catch { XCTFail("\(provider.rawValue) preflight: \(error)"); continue }
             if provider == .codex {

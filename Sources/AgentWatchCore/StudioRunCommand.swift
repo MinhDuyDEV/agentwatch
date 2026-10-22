@@ -63,7 +63,7 @@ import Foundation
             if check {
                 guard try settings.load() == connection,
                       try keys.load(profileID: connection.id) == key else { throw StudioError.identityChanged }
-                print("Đã kiểm tra \(provider.rawValue) · \(provider.qualifiedVersion) · model \(model.id) · chưa gửi inference.")
+                print("Đã kiểm tra \(provider.rawValue) · bản đã kiểm chứng · model \(model.id) · chưa gửi inference.")
                 return 0
             }
             let registry = StudioProcessRegistry(directory: directory)

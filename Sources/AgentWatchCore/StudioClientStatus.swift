@@ -36,7 +36,7 @@ public struct StudioClientStatusReport: Codable, Equatable, Sendable {
             guard selected.contains(target) else { return Tool(target: target.rawValue, status: "not_selected") }
             let cli = [.claude, .codex].contains(target) ? cliVersions[target.rawValue] : nil
             let supported = cli.map { version in
-                StudioCLIProvider(rawValue: target.rawValue).map { StudioClientStatusReport.number(in: $0.qualifiedVersion) == version } ?? true
+                StudioCLIProvider(rawValue: target.rawValue).map { $0.qualifiedVersions.contains { StudioClientStatusReport.number(in: $0) == version } } ?? true
             }
             guard let result = results.first(where: { $0.target == target }) else {
                 return Tool(target: target.rawValue, status: "pending", cli_version: cli, cli_supported: supported)

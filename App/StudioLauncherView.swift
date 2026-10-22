@@ -46,7 +46,7 @@ struct StudioLauncherView: View {
                                 .lineLimit(1).truncationMode(.middle)
                         }
                         TextField("ID phiên cần mở lại (không bắt buộc)", text: $resume).textFieldStyle(.roundedBorder).controlSize(.small)
-                        Text("Đã kiểm chứng: Claude Code 2.1.181 · Codex CLI 0.155.1").font(ClaudeFont.body(10.5)).foregroundStyle(Claude.textMuted)
+                        Text("Đã kiểm chứng: Claude Code 2.1.181 · Codex CLI 0.162.1 hoặc 0.155.1").font(ClaudeFont.body(10.5)).foregroundStyle(Claude.textMuted)
                     }.padding(.top, 6)
                 }.font(ClaudeFont.body(11.5))
             }
@@ -125,7 +125,7 @@ struct StudioLauncherView: View {
             let executable = try StudioCLIExecutable.resolve(provider, explicit: selectedBinary)
             let profile = try StudioCLIProfiles.prepare(connection: connection, provider: provider)
             let plan = try StudioCLILaunchPlan(executable: executable, profile: profile, project: project, model: selected, resumeID: resumeID)
-            try await StudioCLIPreflight.verify(plan)
+            let version = try await StudioCLIPreflight.verify(plan)
             guard studio.profile == connection, studio.state == .connected, models.contains(selected), modelID == selected.id,
                   self.project == project, binary == selectedBinary, resume.trimmingCharacters(in: .whitespacesAndNewlines) == resumeText else { throw StudioError.identityChanged }
             if openTerminal {
@@ -133,7 +133,7 @@ struct StudioLauncherView: View {
                 let command = try StudioTerminalCommand.create(plan: plan, helper: helper)
                 try await StudioTerminalOpener.open(command)
                 message = "Đã mở Terminal. Lỗi khởi chạy, nếu có, hiện trong Terminal."
-            } else { message = "Đã kiểm tra \(provider.rawValue) · \(provider.qualifiedVersion). Chưa gửi yêu cầu AI." }
+            } else { message = "Đã kiểm tra \(provider.rawValue) · \(version). Chưa gửi yêu cầu AI." }
         } catch {
             failed = true
             message = (error as? StudioCLIError)?.localizedDescription ?? (error as? StudioError)?.localizedDescription ?? "Chưa chuẩn bị được phiên CLI. Thử kiểm tra lại."

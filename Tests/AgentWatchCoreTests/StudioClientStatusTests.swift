@@ -44,6 +44,11 @@ final class StudioClientStatusTests: XCTestCase {
         XCTAssertEqual(report.tools[0].cli_supported, true)
         XCTAssertEqual(report.tools[1].cli_supported, false)
         XCTAssertEqual(report.tools[1].error_code, "config_unwritable")
+        for version in ["0.155.1", "0.162.1"] {
+            let qualified = StudioClientStatusReport.make(installationID: UUID(), appVersion: "0.13.0", appBuild: "130", osVersion: "15.6.1",
+                revision: nil, autoSync: true, launchAtLogin: "enabled", selected: [.codex], results: [], cliVersions: ["codex": version], syncedAt: nil)
+            XCTAssertEqual(qualified.tools[1].cli_supported, true, version)
+        }
         let unselected = try JSONSerialization.jsonObject(with: JSONEncoder().encode(report.tools[2])) as? [String: Any]
         XCTAssertEqual(Set(unselected?.keys ?? [:].keys), ["target", "status"], "Unselected tools carry no details")
         let odd = StudioClientStatusReport.make(installationID: UUID(), appVersion: "v0.13", appBuild: "../x", osVersion: nil, revision: "nope",

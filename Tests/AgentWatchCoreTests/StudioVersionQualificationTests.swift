@@ -11,12 +11,15 @@ final class StudioVersionQualificationTests: XCTestCase {
         #!/bin/sh
         test "$1" = '--version' || exit 7
         test -z "$ANTHROPIC_API_KEY$ANTHROPIC_AUTH_TOKEN$OPENAI_API_KEY$STUDIO_API_KEY" || exit 8
-        printf '%s\\n' 'codex-cli 0.155.1'
+        printf '%s\\n' 'codex-cli 0.162.1'
         """
         try Data(script.utf8).write(to: bin)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bin.path)
         try await StudioCLIPreflight.verifyVersion(StudioCLIExecutable(url: bin, provider: .codex))
-        try Data(script.replacingOccurrences(of: "0.155.1", with: "0.1.0").utf8).write(to: bin)
+        // The previously qualified release stays accepted alongside the newest one.
+        try Data(script.replacingOccurrences(of: "0.162.1", with: "0.155.1").utf8).write(to: bin)
+        try await StudioCLIPreflight.verifyVersion(StudioCLIExecutable(url: bin, provider: .codex))
+        try Data(script.replacingOccurrences(of: "0.162.1", with: "0.1.0").utf8).write(to: bin)
         do {
             try await StudioCLIPreflight.verifyVersion(StudioCLIExecutable(url: bin, provider: .codex))
             XCTFail("unknown CLI schema must not receive bulk configuration")

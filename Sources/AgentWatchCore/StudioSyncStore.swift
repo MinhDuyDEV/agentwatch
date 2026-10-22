@@ -249,7 +249,7 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
                         // One `--version` process per changed revision; the version is kept for status reports.
                         let raw = try await StudioCLIPreflight.installedVersion(StudioCLIExecutable.resolve(provider))
                         rememberCLI(target, version: raw)
-                        guard raw == provider.qualifiedVersion else { throw StudioCLIError.unsupportedVersion }
+                        guard provider.isQualified(raw) else { throw StudioCLIError.unsupportedVersion }
                     }
                     guard generation == attempt, try settings.load() == profile, selected == targets, directories == paths,
                           try loadKey(profile) == key else { return }

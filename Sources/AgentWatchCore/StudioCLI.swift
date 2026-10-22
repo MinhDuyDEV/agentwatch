@@ -23,7 +23,10 @@ public enum StudioCLIError: String, Error, LocalizedError, Sendable {
 }
 public enum StudioCLIProvider: String, Codable, Sendable, CaseIterable {
     case claude, codex
-    public var qualifiedVersion: String { self == .claude ? "2.1.181 (Claude Code)" : "codex-cli 0.155.1" }
+    /// Exact `--version` outputs qualified with Studio, newest first. Machines
+    /// update Codex on their own, so an older qualified release stays accepted.
+    public var qualifiedVersions: [String] { self == .claude ? ["2.1.181 (Claude Code)"] : ["codex-cli 0.162.1", "codex-cli 0.155.1"] }
+    public func isQualified(_ version: String) -> Bool { qualifiedVersions.contains(version) }
     public var nativeProtocol: String { self == .claude ? "messages" : "responses" }
 }
 
