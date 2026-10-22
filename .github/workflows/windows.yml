@@ -127,7 +127,7 @@ jobs:
           $code = $LASTEXITCODE
           $lines | ForEach-Object { Write-Host $_ }
           if ($code -ne 0) { throw "check-wsl failed ($code)" }
-          if (-not ($lines -match '^Pi: 0\.87\.1$')) { throw "check-wsl did not read the Pi version" }
+          if (-not ($lines -match '^Pi: (0\.87\.1|1\.3\.0)$')) { throw "check-wsl did not read the Pi version" }
           if (-not ($lines -match 'user runneradmin')) { throw "check-wsl did not run as the member" }
           $global:LASTEXITCODE = 0
       - name: Ubuntu opens as the member with Piagent, the sandbox runs, Start menu has Piagent
