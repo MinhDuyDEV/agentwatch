@@ -72,6 +72,48 @@ final class StudioBulkConfigurationTests: XCTestCase {
     func model(_ provider: String, _ name: String) -> StudioModel {
         StudioModel(id: name, displayName: name, ownedBy: provider, nativeProtocol: provider == "claude" ? "messages" : "responses", providerModel: name, clientModel: name, maxOutputTokens: 16384, outputAccounting: provider == "claude" ? "provider_cap" : "usage_settlement", contextMode: "provider_default")
     }
+    func testCodexOwnConfigEditsDoNotBlockTheNextSync() throws {
+        let dir = try folder(), profile = try StudioProfile(origin: StudioOrigin("https://studio.test"), id: String(repeating: "b", count: 64))
+        let config = dir.appendingPathComponent("config.toml"), receipt = dir.appendingPathComponent("receipt.json")
+        let personal = Data("model = \"gpt-5.6-luna\"\nmodel_reasoning_effort = \"high\"\n\n[tui]\nhide_rate_limit_model_nudge = true\n".utf8)
+        try personal.write(to: config)
+        let catalog = Data(#"{"models":[{"slug":"gpt-5.6-luna","context_window":272000},{"slug":"gpt-6-luna","context_window":272000},{"slug":"gpt-6-astra","context_window":272000}]}"#.utf8)
+        let granted = [model("codex", "gpt-5.6-luna"), model("codex", "gpt-6-luna"), model("codex", "gpt-6-astra")]
+        try StudioClientConfiguration.apply(StudioClientConfiguration.prepareAll(tool: .codex, directory: dir, connection: profile, models: granted, helper: dir, codexCatalog: catalog), receipt: receipt)
+        // What Codex 0.162.1 wrote on 2026-10-22: model migration, effort, hook trust, notice.
+        var text = String(decoding: try Data(contentsOf: config), as: UTF8.self)
+        text = text.replacingOccurrences(of: "model = \"gpt-5.6-luna\"", with: "model = \"gpt-6-luna\"")
+            .replacingOccurrences(of: "model_reasoning_effort = \"high\"", with: "model_reasoning_effort = \"medium\"")
+            .replacingOccurrences(of: "[tui]", with: "[hooks.state.\"/tmp/hooks.json:session_start:0:0\"]\ntrusted_hash = \"sha256:00\"\n\n[tui]")
+            + "\n[notice.model_migrations]\n\"gpt-5.6-luna\" = \"gpt-6-luna\"\n"
+        try Data(text.utf8).write(to: config)
+        XCTAssertTrue(try StudioClientConfiguration.rebaseCodexSelfEdits(receipt))
+        XCTAssertFalse(try StudioClientConfiguration.rebaseCodexSelfEdits(receipt), "already current")
+        // The key is narrowed to one model; Codex's own edits survive the new import.
+        try StudioClientConfiguration.apply(StudioClientConfiguration.prepareAll(tool: .codex, directory: dir, connection: profile, models: [model("codex", "gpt-6-astra")], helper: dir, codexCatalog: catalog), receipt: receipt)
+        let synced = String(decoding: try Data(contentsOf: config), as: UTF8.self)
+        XCTAssertTrue(synced.contains("model = \"gpt-6-astra\"")); XCTAssertTrue(synced.contains("model_reasoning_effort = \"medium\""))
+        XCTAssertTrue(synced.contains("trusted_hash")); XCTAssertTrue(synced.contains("[notice.model_migrations]"))
+        try StudioClientConfiguration.restoreReceipt(at: receipt)
+        XCTAssertEqual(try Data(contentsOf: config), personal)
+    }
+    func testChangesToAgentWatchCodexPartsStillBlockSync() throws {
+        let dir = try folder(), profile = try StudioProfile(origin: StudioOrigin("https://studio.test"), id: String(repeating: "b", count: 64))
+        let config = dir.appendingPathComponent("config.toml"), receipt = dir.appendingPathComponent("receipt.json")
+        let catalog = Data(#"{"models":[{"slug":"gpt-6-astra","context_window":272000}]}"#.utf8), granted = [model("codex", "gpt-6-astra")]
+        try StudioClientConfiguration.apply(StudioClientConfiguration.prepareAll(tool: .codex, directory: dir, connection: profile, models: granted, helper: dir, codexCatalog: catalog), receipt: receipt)
+        let original = String(decoding: try Data(contentsOf: config), as: UTF8.self)
+        for tampered in [original.replacingOccurrences(of: "https://studio.test/v1", with: "https://other.test/v1"),
+                         original.replacingOccurrences(of: "model_provider = \"agent_watch\"", with: "model_provider = \"openai\""),
+                         original.replacingOccurrences(of: "model_catalog_json = ", with: "model_catalog_json = \"/tmp/x.json\"\n# was "),
+                         original + "\n# AgentWatch Studio begin\n# AgentWatch Studio end\n"] {
+            try Data(tampered.utf8).write(to: config)
+            XCTAssertFalse(try StudioClientConfiguration.rebaseCodexSelfEdits(receipt))
+            XCTAssertThrowsError(try StudioClientConfiguration.apply(StudioClientConfiguration.prepareAll(tool: .codex, directory: dir, connection: profile, models: granted, helper: dir, codexCatalog: catalog), receipt: receipt)) {
+                XCTAssertEqual($0 as? StudioConfigurationError, .changed)
+            }
+        }
+    }
     func testPiImportsBothFamiliesAndPreservesPersonalModelsAndExtensions() throws {
         let dir = try folder(), profile = try StudioProfile(origin: StudioOrigin("http://127.0.0.1:17922"), id: String(repeating: "a", count: 64))
         let a = model("claude", "claude-haiku-4-5-20251001"), b = model("codex", "gpt-6-luna")

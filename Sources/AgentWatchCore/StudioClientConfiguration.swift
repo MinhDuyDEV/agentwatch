@@ -272,6 +272,41 @@ public enum StudioClientConfiguration {
             return expression.matches(in: text as String, range: NSRange(location: 0, length: text.length)).map { text.substring(with: $0.range(at: 1)) }
         })
     }
+    /// Codex rewrites its own config.toml (model picker, reasoning effort, hook
+    /// trust, notices). When the parts Agent Watch wrote are unchanged, record the
+    /// current file as the import so those edits do not block the next sync. The
+    /// original `before` stays for restore. Returns whether the receipt changed.
+    @discardableResult
+    public static func rebaseCodexSelfEdits(_ file: URL) throws -> Bool {
+        try checked(file)
+        guard let data = try read(file) else { return false }
+        let plan = try JSONDecoder().decode(StudioConfigurationPlan.self, from: data)
+        guard plan.tool == .codex, let index = plan.edits.firstIndex(where: { $0.file.lastPathComponent == "config.toml" }) else { return false }
+        let edit = plan.edits[index]
+        guard let current = try read(edit.file), current != edit.after,
+              let expected = codexManagedParts(edit.after), codexManagedParts(current) == expected else { return false }
+        var edits = plan.edits
+        edits[index] = StudioConfigurationEdit(file: edit.file, before: edit.before, after: current)
+        try privateWrite(JSONEncoder().encode(StudioConfigurationPlan(edits: edits, tool: plan.tool, profileID: plan.profileID)), to: file)
+        return true
+    }
+    /// The top-level provider/catalog lines and the single Studio block.
+    static func codexManagedParts(_ data: Data) -> [String]? {
+        let begin = "# AgentWatch Studio begin", end = "# AgentWatch Studio end"
+        guard let text = String(data: data, encoding: .utf8), text.components(separatedBy: begin).count == 2,
+              text.components(separatedBy: end).count == 2, let a = text.range(of: begin), let b = text.range(of: end),
+              a.lowerBound < b.lowerBound else { return nil }
+        var parts: [String] = []
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") { break }
+            guard let equal = trimmed.firstIndex(of: "=") else { continue }
+            let key = trimmed[..<equal].trimmingCharacters(in: .whitespaces)
+            if ["model_provider", "model_catalog_json"].contains(key) { parts.append(trimmed) }
+        }
+        guard parts.contains("model_provider = \"agent_watch\"") else { return nil }
+        return parts + [String(text[a.lowerBound..<b.upperBound])]
+    }
     public static func restoreReceipt(at file: URL) throws {
         guard let data = try read(file) else { throw StudioConfigurationError.invalid }
         let plan = try JSONDecoder().decode(StudioConfigurationPlan.self, from: data)

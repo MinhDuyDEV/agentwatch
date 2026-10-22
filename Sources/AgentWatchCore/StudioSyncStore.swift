@@ -231,6 +231,7 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
                         next.append(result); completed[physical] = result; continue
                     }
                     let receipt = StudioClientConfiguration.receiptURL(tool: target.tool, directory: dir)
+                    try StudioClientConfiguration.rebaseCodexSelfEdits(receipt)
                     if let saved { try StudioClientConfiguration.adoptOrphanedReceipt(receipt, owner: profile.id, savedProfiles: saved) }
                     if !force, revisions[physical] == manifest.revision, let data = try StudioClientConfiguration.read(receipt),
                        let saved = try? JSONDecoder().decode(StudioConfigurationPlan.self, from: data),
@@ -332,6 +333,7 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
             let receipt = profile.credentialMode == .managed && target == .piagent
                 ? StudioManagedConfiguration.receiptURL(directory: directory(target))
                 : StudioClientConfiguration.receiptURL(tool: target.tool, directory: directory(target))
+            try StudioClientConfiguration.rebaseCodexSelfEdits(receipt)
             if let saved = try? settings.savedProfileIDs() {
                 try StudioClientConfiguration.adoptOrphanedReceipt(receipt, owner: profile.id, savedProfiles: saved)
             }
