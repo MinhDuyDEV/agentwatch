@@ -24,7 +24,8 @@ public enum StudioManagedBrokerCommand {
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         guard case .object(var out) = try JSONDecoder().decode(StudioJSONValue.self, from: encoder.encode(manifest)) else { throw StudioError.invalidResponse }
         // Version 2 reports only to a Studio that lists them.
-        out["broker_features"] = .array([.string("process")] + [2, 3].filter { manifest.processVersions?.contains($0) == true }.map { .string("process-v\($0)") })
+        // close-retry: a close Studio did not confirm is sent again when asked again.
+        out["broker_features"] = .array([.string("process")] + [2, 3].filter { manifest.processVersions?.contains($0) == true }.map { .string("process-v\($0)") } + [.string("close-retry")])
         return .object(out)
     }
     static func processValue(_ raw: Any?) throws -> [String: StudioJSONValue]? {

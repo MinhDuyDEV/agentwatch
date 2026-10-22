@@ -14,6 +14,7 @@ public sealed class StudioManagedBroker
     readonly StudioManagedDevice device;
     readonly IStudioTransport transport;
     Guid? root;
+    Guid? unconfirmed; // a run whose close Studio did not confirm
     readonly Dictionary<string, StudioRunGrant> grants = [];
     static readonly string[] Efforts = ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -101,7 +102,7 @@ public sealed class StudioManagedBroker
         if (root is not null || !Efforts.Contains(effort) || taskClass is not ("simple" or "standard" or "complex")) throw new StudioException(StudioError.permissionDenied);
         var grant = await Grant("runs", new JsonObject { ["operation_id"] = Id(operation), ["effort"] = effort, ["task_class"] = taskClass }, cancellation);
         if (grant.Role != "main") throw new StudioException(StudioError.invalidResponse);
-        root = grant.RunId; grants["main"] = grant; return grant;
+        root = grant.RunId; unconfirmed = null; grants["main"] = grant; return grant;
     }
 
     public async Task<StudioRunGrant> ChildAsync(string role, CancellationToken cancellation = default)
@@ -117,7 +118,7 @@ public sealed class StudioManagedBroker
         if (root is not null) throw new StudioException(StudioError.permissionDenied);
         var grant = await Grant($"runs/{Id(runId)}/recover", [], cancellation);
         if (grant.RunId != runId || grant.Role != "main") throw new StudioException(StudioError.identityChanged);
-        root = runId; grants["main"] = grant; return grant;
+        root = runId; unconfirmed = null; grants["main"] = grant; return grant;
     }
 
     public async Task<StudioRunGrant> RenewAsync(string role, CancellationToken cancellation = default)
@@ -133,22 +134,25 @@ public sealed class StudioManagedBroker
     // outcomes only), sent to a Studio whose Harness has a workflow.
     public async Task CloseAsync(string role = "", JsonObject? process = null, CancellationToken cancellation = default)
     {
-        if (root is not { } run) return;
-        if (role.Length > 0 && !grants.ContainsKey(role)) throw new StudioException(StudioError.permissionDenied);
+        var whole = role.Length == 0 || role == "main";
+        // The runtime's retry of a close Studio did not confirm reaches Studio
+        // again for that run (closing twice is safe there).
+        if ((root ?? (whole ? unconfirmed : null)) is not { } run) return;
+        if (!whole && !grants.ContainsKey(role)) throw new StudioException(StudioError.permissionDenied);
         var body = new JsonObject { ["role"] = role };
         if (process is not null)
         {
-            if (!(role.Length == 0 || role == "main") || !StudioProcessReport.Valid(process, Manifest.ProcessVersions ?? [1])) throw new StudioException(StudioError.invalidResponse);
+            if (!whole || !StudioProcessReport.Valid(process, Manifest.ProcessVersions ?? [1])) throw new StudioException(StudioError.invalidResponse);
             if (Manifest.Harness?.Configuration.Workflow is not null) body["process"] = process.DeepClone();
         }
-        var whole = role.Length == 0 || role == "main";
         try { await Post(transport, Profile.StudioOrigin, $"runs/{Id(run)}/close", device.Token, body, cancellation); }
         // A run Studio did not confirm closed (unreachable, 5xx, refused
-        // grant) is settled by Studio when its lease lapses. Keeping it here
-        // would refuse every later start of this broker. Only a refused
+        // grant) no longer holds the broker: keeping it would refuse every
+        // later start. It stays unconfirmed for the runtime's retry until the
+        // next start; Studio settles it when its lease lapses. Only a refused
         // report keeps it, so the runtime can close without one.
-        catch (Exception error) when (whole && (error as StudioException)?.Code != StudioError.invalidResponse) { root = null; grants.Clear(); throw; }
-        if (whole) { root = null; grants.Clear(); } else grants.Remove(role);
+        catch (Exception error) when (whole && (error as StudioException)?.Code != StudioError.invalidResponse) { unconfirmed = run; root = null; grants.Clear(); throw; }
+        if (whole) { root = null; unconfirmed = null; grants.Clear(); } else grants.Remove(role);
     }
 
     // The manifest for the runtime, with what this broker accepts beyond the
@@ -158,6 +162,7 @@ public sealed class StudioManagedBroker
         var value = (JsonObject)StudioJson.ToNode(Manifest);
         var features = new JsonArray("process");
         foreach (var version in new[] { 2, 3 }.Where(v => Manifest.ProcessVersions?.Contains(v) == true)) features.Add($"process-v{version}");
+        features.Add("close-retry"); // a close Studio did not confirm is sent again when asked again
         value["broker_features"] = features;
         return value;
     }

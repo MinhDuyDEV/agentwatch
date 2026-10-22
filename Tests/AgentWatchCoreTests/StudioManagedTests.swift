@@ -135,7 +135,7 @@ private actor ManagedTransport: StudioHTTPTransport {
         XCTAssertEqual(r["effort"].flatMap { if case .string(let s) = $0 { s } else { nil } }, "low")
         XCTAssertEqual(c["fast_mode"].flatMap { if case .bool(let b) = $0 { b } else { nil } }, true)
         guard case .array(let features) = out["broker_features"] else { return XCTFail("features") }
-        XCTAssertEqual(features.count, 1)
+        XCTAssertEqual(features.count, 2)
         for bad in [StudioWorkflow(plan: "always", verify: "off", review: "off", maxFixLoops: 1), StudioWorkflow(plan: "off", verify: "off", review: "off", maxFixLoops: 4)] {
             let invalid = StudioHarness(id: profileID, teamID: team, revision: 2, configuration: .init(main: low, research: nil, review: nil, workflow: bad))
             XCTAssertThrowsError(try StudioManifest(authority: base.authority, harness: invalid, schemaVersion: 2, revision: base.revision, orgID: org, user: base.user, keyID: keyID, credentialMode: .managed, expiresAt: base.expiresAt, refreshSeconds: 300, models: [], codexCatalog: .object([:])).validate(profile: profile))
@@ -178,10 +178,10 @@ private actor ManagedTransport: StudioHTTPTransport {
         XCTAssertFalse(StudioProcessReport.valid(try XCTUnwrap(try StudioManagedBrokerCommand.processValue(v3Text)), versions: [1, 2, 3]))
         var all = manifest; all.processVersions = [1, 2, 3]
         guard case .object(let listedAll) = try StudioManagedBrokerCommand.configValue(all), case .array(let three) = listedAll["broker_features"] else { return XCTFail("features v3") }
-        XCTAssertEqual(three.compactMap { if case .string(let s) = $0 { s } else { nil } }, ["process", "process-v2", "process-v3"])
+        XCTAssertEqual(three.compactMap { if case .string(let s) = $0 { s } else { nil } }, ["process", "process-v2", "process-v3", "close-retry"])
         var listing = manifest; listing.processVersions = [1, 2]
         guard case .object(let listed) = try StudioManagedBrokerCommand.configValue(listing), case .array(let both) = listed["broker_features"] else { return XCTFail("features v2") }
-        XCTAssertEqual(both.compactMap { if case .string(let s) = $0 { s } else { nil } }, ["process", "process-v2"])
+        XCTAssertEqual(both.compactMap { if case .string(let s) = $0 { s } else { nil } }, ["process", "process-v2", "close-retry"])
         let v2Broker = try StudioManagedBroker(profile: profile, manifest: listing, device: StudioManagedDevice(deviceID: deviceID, token: token("device", deviceID), expiresAt: Date(), instanceID: instance, epoch: epoch, generation: 1),
             client: StudioManagedClient(transport: ManagedTransport([(201, grant()), (204, [:])])))
         _ = try await v2Broker.start(operation: UUID(), effort: "medium", taskClass: "standard")
@@ -217,13 +217,32 @@ private actor ManagedTransport: StudioHTTPTransport {
         _ = try await broker.start(operation: UUID(), effort: "medium", taskClass: "standard")
         do { try await broker.close(); XCTFail("failed close reported as closed") }
         catch { XCTAssertEqual((error as? StudioManagedRefusal)?.error, .serverUnavailable) }
-        // The runtime's retry without a report has nothing left to close.
-        try await broker.close()
         _ = try await broker.start(operation: UUID(), effort: "medium", taskClass: "standard")
+        try await broker.close()
+        // A start leaves the unconfirmed run to Studio: nothing more to close.
         try await broker.close()
         let paths = await transport.captured().compactMap { $0.url?.path }
         XCTAssertEqual(paths.count, 4)
         XCTAssertTrue(paths[2].hasSuffix("/managed/runs"))
+    }
+    /// The runtime asking again for a close Studio did not confirm reaches
+    /// Studio again for the same run, so the runtime never reports a run
+    /// closed that Studio never heard about (2026-10-22 audit).
+    func testRetriedCloseReachesStudioAgain() async throws {
+        let unavailable: [String: Any] = ["error": ["code": "managed_service_unavailable"]]
+        let transport = ManagedTransport([(201, grant()), (503, unavailable), (503, unavailable), (204, [:])])
+        let broker = try broker(transport)
+        _ = try await broker.start(operation: UUID(), effort: "medium", taskClass: "standard")
+        for _ in 0..<2 {
+            do { try await broker.close(); XCTFail("failed close reported as closed") }
+            catch { XCTAssertEqual((error as? StudioManagedRefusal)?.error, .serverUnavailable) }
+        }
+        try await broker.close()
+        try await broker.close() // confirmed: nothing left
+        let paths = await transport.captured().compactMap { $0.url?.path }
+        XCTAssertEqual(paths.count, 4)
+        XCTAssertEqual(Set(paths.dropFirst()).count, 1, "every close goes to the same run")
+        XCTAssertTrue(paths[3].hasSuffix("/close"))
     }
     /// Studio refusing the process report keeps the run, so the runtime can
     /// close it without the report.

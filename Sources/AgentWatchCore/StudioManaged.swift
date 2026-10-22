@@ -171,6 +171,7 @@ public struct StudioManagedClient: Sendable {
     private let client: StudioManagedClient
     private let device: StudioManagedDevice
     private var root: UUID?
+    private var unconfirmed: UUID? // a run whose close Studio did not confirm
     private var grants: [String: StudioRunGrant] = [:]
     public init(profile: StudioProfile, manifest: StudioManifest, device: StudioManagedDevice, client: StudioManagedClient) throws {
         try manifest.validate(profile: profile)
@@ -194,7 +195,7 @@ public struct StudioManagedClient: Sendable {
             body: ["operation_id": .string(operation.uuidString.lowercased()), "effort": .string(effort), "task_class": .string(taskClass)])
         try grant.validate(authority: device.authority)
         guard grant.role == "main" else { throw StudioError.invalidResponse }
-        root = grant.runID; grants["main"] = grant; return grant
+        root = grant.runID; unconfirmed = nil; grants["main"] = grant; return grant
     }
     public func child(role: String) async throws -> StudioRunGrant {
         guard StudioHarness.helperRoles.contains(role), let root, grants[role] == nil else { throw StudioError.permissionDenied }
@@ -208,7 +209,7 @@ public struct StudioManagedClient: Sendable {
         let grant: StudioRunGrant = try await client.post(profile.origin, "runs/\(runID.uuidString.lowercased())/recover", credential: device.token, body: [:])
         try grant.validate(authority: device.authority)
         guard grant.runID == runID, grant.role == "main" else { throw StudioError.identityChanged }
-        root = runID; grants["main"] = grant; return grant
+        root = runID; unconfirmed = nil; grants["main"] = grant; return grant
     }
     public func renew(role: String) async throws -> StudioRunGrant {
         guard let old = grants[role] else { throw StudioError.permissionDenied }
@@ -222,25 +223,28 @@ public struct StudioManagedClient: Sendable {
     /// outcomes only). It goes to a Studio that sends a workflow: an older
     /// Studio refuses unknown fields.
     public func close(role: String = "", process: [String: StudioJSONValue]? = nil) async throws {
-        guard let root else { return }
-        guard role.isEmpty || grants[role] != nil else { throw StudioError.permissionDenied }
+        let whole = role.isEmpty || role == "main"
+        // The runtime's retry of a close Studio did not confirm reaches Studio
+        // again for that run (closing twice is safe there).
+        guard let run = root ?? (whole ? unconfirmed : nil) else { return }
+        guard whole || grants[role] != nil else { throw StudioError.permissionDenied }
         var body: [String: StudioJSONValue] = ["role": .string(role)]
         if let process {
-            guard role.isEmpty || role == "main", StudioProcessReport.valid(process, versions: manifest.processVersions ?? [1]) else { throw StudioError.invalidResponse }
+            guard whole, StudioProcessReport.valid(process, versions: manifest.processVersions ?? [1]) else { throw StudioError.invalidResponse }
             if manifest.harness?.configuration.workflow != nil { body["process"] = .object(process) }
         }
-        let run = role.isEmpty || role == "main"
-        do { _ = try await client.request(profile.origin, "runs/\(root.uuidString.lowercased())/close", credential: device.token, body: body) }
+        do { _ = try await client.request(profile.origin, "runs/\(run.uuidString.lowercased())/close", credential: device.token, body: body) }
         catch {
             // A run Studio did not confirm closed (unreachable, 5xx, refused
-            // grant) is settled by Studio when its lease lapses. Keeping it
-            // here would refuse every later start of this broker. Only a
+            // grant) no longer holds the broker: keeping it would refuse every
+            // later start. It stays unconfirmed for the runtime's retry until
+            // the next start; Studio settles it when its lease lapses. Only a
             // refused report keeps it, so the runtime can close without one.
             let kind = (error as? StudioManagedRefusal)?.error ?? error as? StudioError
-            if run, kind != .invalidResponse { self.root = nil; grants.removeAll() }
+            if whole, kind != .invalidResponse { unconfirmed = run; self.root = nil; grants.removeAll() }
             throw error
         }
-        if run { self.root = nil; grants.removeAll() } else { grants.removeValue(forKey: role) }
+        if whole { self.root = nil; unconfirmed = nil; grants.removeAll() } else { grants.removeValue(forKey: role) }
     }
 }
 
