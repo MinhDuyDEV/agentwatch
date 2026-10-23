@@ -40,7 +40,11 @@ public struct StudioHarness: Codable, Sendable {
         /// tier, charged to the key's quota at a higher rate). Watch only
         /// carries it to the runtime, which shows the switch.
         public var fastMode: Bool? = nil
-        enum CodingKeys: String, CodingKey { case main, research, review, workflow, scout, verify, fastMode = "fast_mode" }
+        /// The Harness lets members choose Bypass (the runtime asks nothing
+        /// before a command). Studio always states it; Watch only carries it,
+        /// and the runtime offers Bypass only on true.
+        public var bypassMode: Bool? = nil
+        enum CodingKeys: String, CodingKey { case main, research, review, workflow, scout, verify, fastMode = "fast_mode", bypassMode = "bypass_mode" }
     }
     /// The roles the main agent may delegate to.
     public static let helperRoles: Set<String> = ["scout", "research", "verify", "review"]
