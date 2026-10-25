@@ -80,3 +80,48 @@ observed indexed totals, not an assertion of complete provider billing.
 Synthetic Debug sample: 10,000 prompt records, unseen range containing 9,000 records,
 90 FTS matches: approximately 1.7 ms in an isolated run and 12 ms while a full app build was running. This isolates local index latency;
 it excludes source refresh and is not a guarantee for larger usage ledgers or devices.
+
+
+## Cache bookkeeping optimization — 2026-10-25
+
+The in-memory file cache now computes a file's estimated weight once when it is
+inserted or replaced, then adjusts a running total on replacement and eviction.
+Previously every insertion walked all cached prompts again. The 128-entry and
+32 MiB estimated limits, insertion order, SQLite fallback, parsing, scoring and
+accounting are unchanged; no serialized cache-version change is needed.
+
+`swift test -c release --filter CoachingQueryStoreTests` now includes an isolated
+`FILE_CACHE_BENCH`: 1,000 inserts, 300 synthetic prompts per entry, three samples,
+SQLite deliberately unavailable so the measurement isolates RAM bookkeeping.
+On the same arm64 machine / Swift 6.4:
+
+| Bookkeeping fixture | Samples (ms) | Median (ms) |
+|---|---|---:|
+| Before | 24.93, 25.02, 25.00 | 25.00 |
+| After | 0.68, 0.67, 0.67 | 0.67 |
+
+This is a 97.3% reduction for this component's synthetic workload, not a claim
+that the entire app opens 37 times faster. The existing 6.4 MB scan fixture after
+this change measured cold 220.85 ms, SQLite 15.87 ms, RAM 0.04 ms, unchanged-source
+refresh 15.41 ms. Cold parsing and snapshot serialization remain separate costs.
+
+Verification: 13 query-store tests passed, including new replacement, shrinking,
+oversize and count-limit eviction checks. The full Release suite completed 361
+tests with 3 skips and zero failures. The timing tests use fixtures and do not
+read the user's private prompt history. Native UI responsiveness and Windows
+performance have not been established by these tests.
+
+The macOS Debug application also built successfully with
+`xcodebuild -project AgentWatchMac.xcodeproj -scheme AgentWatchMac -configuration Debug -derivedDataPath /tmp/agentwatch-performance-build CODE_SIGNING_ALLOWED=NO build`.
+This is an unsigned compile check, not an installed-app or signing test.
+Skipped tests were `testOptInRealDayDetailedExport` (opt-in),
+`testActualNativeCLIConfigurationPreflight` (opt-in), and
+`testSkipsBrokenNodeAndNeverUsesLaunchPATHForJS` (working Node fixture unavailable).
+
+Isolated native verification follow-up: `scripts/insights-qa/build.sh` now supports
+both the legacy SwiftPM Modules/object layout and Swift 6.4 Products/Debug static
+library layout. The harness build and `--validate-fixture` completed successfully
+(`UI_FIXTURE_OK`). Computer Use refused access to AgentWatch Insights Review
+with “was not approved”; therefore no interactive gate or native UI load latency
+is claimed. The harness uses synthetic stores and does not start production
+schedulers or provider clients.

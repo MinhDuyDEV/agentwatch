@@ -60,7 +60,8 @@ public actor CoachingQueryStore {
     private static let version = "query-v2|" + Pricing.versionLabel
     private let database: QueryDatabase?
     private var scanGenerations: [String: UUID] = [:]
-    private var files: [String: CachedLogFile] = [:]
+    private var files: [String: (value: CachedLogFile, estimatedBytes: Int)] = [:]
+    private var fileBytes = 0
     private var fileOrder: [String] = []
     private var snapshots: [String: CoachingSnapshot] = [:]
 
@@ -86,7 +87,7 @@ public actor CoachingQueryStore {
     }
 
     func file(_ key: String) -> CachedLogFile? {
-        if let hit = files[key] { return hit }
+        if let hit = files[key] { return hit.value }
         guard let value = database?.load(CachedLogFile.self, category: "file", key: key) else { return nil }
         rememberFile(value, key: key)
         return value
@@ -100,14 +101,21 @@ public actor CoachingQueryStore {
     private func rememberFile(_ value: CachedLogFile, key: String) {
         fileOrder.removeAll { $0 == key }
         fileOrder.append(key)
-        files[key] = value
         // Checkpoint byte length dominates reducer state; leave room for decoded
         // prompt/ledger objects as well. Large entries remain disk-only.
-        while files.count > 128 || files.values.reduce(0, { $0 + ($1.checkpoint?.state.count ?? 0) * 3
-            + $1.result.prompts.reduce(0) { $0 + $1.text.utf8.count * 3 + 512 }
-            + ($1.result.summary?.usageEntries?.count ?? 0) * 1024 }) > 32 * 1024 * 1024 {
+        // Compute only the changed entry's weight, not every cached prompt on
+        // every insertion. Actor isolation keeps replacement/eviction atomic.
+        let estimatedBytes = (value.checkpoint?.state.count ?? 0) * 3
+            + value.result.prompts.reduce(0) { $0 + $1.text.utf8.count * 3 + 512 }
+            + (value.result.summary?.usageEntries?.count ?? 0) * 1024
+        fileBytes -= files[key]?.estimatedBytes ?? 0
+        files[key] = (value, estimatedBytes)
+        fileBytes += estimatedBytes
+        while files.count > 128 || fileBytes > 32 * 1024 * 1024 {
             guard !fileOrder.isEmpty else { break }
-            files.removeValue(forKey: fileOrder.removeFirst())
+            if let removed = files.removeValue(forKey: fileOrder.removeFirst()) {
+                fileBytes -= removed.estimatedBytes
+            }
         }
     }
 

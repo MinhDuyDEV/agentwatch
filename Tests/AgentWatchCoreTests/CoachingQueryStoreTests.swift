@@ -271,6 +271,64 @@ final class CoachingQueryStoreTests: XCTestCase, @unchecked Sendable {
         assertSame(resumed, full)
     }
 
+    func testFileCacheReplacementAndEvictionRespectMemoryBudget() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.dir) }
+        try seed(f)
+        // A directory cannot be opened as SQLite: observe RAM eviction without
+        // the disk fallback repopulating an entry and masking a budget error.
+        let store = CoachingQueryStore(url: f.dir)
+        let stamp = try XCTUnwrap(LogFileStamp.read(f.files[0]))
+        func entry(_ bytes: Int) -> CachedLogFile {
+            CachedLogFile(stamp: stamp, result: CoachingFileResult(prompts: [], summary: nil),
+                          checkpoint: LogCheckpoint(offset: 0, state: Data(count: bytes), headHash: "", boundaryHash: ""))
+        }
+        let large = entry(4 * 1024 * 1024) // 12 MiB estimated, two fit in 32 MiB.
+        await store.saveFile(large, key: "a")
+        await store.saveFile(large, key: "b")
+        for _ in 0..<10 { await store.saveFile(large, key: "a") }
+        let keptB = await store.file("b")
+        XCTAssertNotNil(keptB, "replacing an entry must not accumulate its old weight")
+        await store.saveFile(large, key: "c")
+        let evictedB = await store.file("b")
+        let keptA = await store.file("a")
+        XCTAssertNil(evictedB)
+        XCTAssertNotNil(keptA)
+        await store.saveFile(entry(0), key: "a")
+        await store.saveFile(large, key: "d")
+        let keptC = await store.file("c")
+        XCTAssertNotNil(keptC, "shrinking an entry must release its estimated weight")
+        await store.saveFile(entry(12 * 1024 * 1024), key: "oversized")
+        let oversized = await store.file("oversized")
+        XCTAssertNil(oversized)
+        for n in 0..<129 { await store.saveFile(entry(0), key: "small-\(n)") }
+        let oldest = await store.file("small-0")
+        let newest = await store.file("small-128")
+        XCTAssertNil(oldest)
+        XCTAssertNotNil(newest)
+    }
+
+    func testFileCacheInsertionTimings() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.dir) }
+        try seed(f, count: 40)
+        let result = await CoachingScan.scan(in: f.range, roots: f.roots, store: f.store)
+        let prompt = try XCTUnwrap(result.prompts.first)
+        let value = CachedLogFile(stamp: try XCTUnwrap(LogFileStamp.read(f.files[0])),
+                                 result: CoachingFileResult(prompts: Array(repeating: prompt, count: 300), summary: nil), checkpoint: nil)
+        // Isolate in-memory bookkeeping from SQLite encoding and parsing.
+        for sample in 0..<3 {
+            let store = CoachingQueryStore(url: f.dir)
+            let started = ContinuousClock.now
+            for n in 0..<1_000 { await store.saveFile(value, key: "file-\(n)") }
+            let elapsed = started.duration(to: .now).components
+            let ms = Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
+            let oldest = await store.file("file-0")
+            let newest = await store.file("file-999")
+            XCTAssertNil(oldest)
+            XCTAssertEqual(newest?.result.prompts.count, 300)
+            print(String(format: "FILE_CACHE_BENCH sample=%d entries=1000 prompts_per_entry=300 elapsed_ms=%.2f", sample, ms))
+        }
+    }
+
     func testQueryTimingsOnSyntheticHistory() async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.dir) }
         try seed(f, count: 40)
