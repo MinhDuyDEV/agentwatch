@@ -105,12 +105,22 @@ public sealed class StudioManagedBroker
         root = grant.RunId; unconfirmed = null; grants["main"] = grant; return grant;
     }
 
-    public async Task<StudioRunGrant> ChildAsync(string role, CancellationToken cancellation = default)
+    // The most helper slots a broker command may name.
+    public const int MaxHelperSlots = 3;
+    // Slot 1 keeps the role's own key, so a runtime without slots is unchanged.
+    internal static string Key(string role, int slot) => slot > 1 ? $"{role}#{slot}" : role;
+
+    public async Task<StudioRunGrant> ChildAsync(string role, int slot = 1, CancellationToken cancellation = default)
     {
-        if (!StudioHarness.HelperRoles.Contains(role) || root is not { } run || grants.ContainsKey(role)) throw new StudioException(StudioError.permissionDenied);
-        var grant = await Grant($"runs/{Id(run)}/children", new JsonObject { ["role"] = role }, cancellation);
-        if (grant.RunId != run || grant.Role != role) throw new StudioException(StudioError.invalidResponse);
-        grants[role] = grant; return grant;
+        var key = Key(role, slot);
+        if (!StudioHarness.HelperRoles.Contains(role) || slot is < 1 or > MaxHelperSlots || (slot > 1 && (Manifest.HelperSlots ?? 1) < slot)
+            || root is not { } run || grants.ContainsKey(key)) throw new StudioException(StudioError.permissionDenied);
+        // Only a slot past the first names itself: an older Studio never sees the field.
+        var body = new JsonObject { ["role"] = role };
+        if (slot > 1) body["slot"] = slot;
+        var grant = await Grant($"runs/{Id(run)}/children", body, cancellation);
+        if (grant.RunId != run || grant.Role != role || (grant.Slot is { } granted && granted != slot)) throw new StudioException(StudioError.invalidResponse);
+        grants[key] = grant; return grant;
     }
 
     public async Task<StudioRunGrant> RecoverAsync(Guid runId, CancellationToken cancellation = default)
@@ -121,25 +131,31 @@ public sealed class StudioManagedBroker
         root = runId; unconfirmed = null; grants["main"] = grant; return grant;
     }
 
-    public async Task<StudioRunGrant> RenewAsync(string role, CancellationToken cancellation = default)
+    public async Task<StudioRunGrant> RenewAsync(string role, int slot = 1, CancellationToken cancellation = default)
     {
-        if (!grants.TryGetValue(role, out var old)) throw new StudioException(StudioError.permissionDenied);
+        var key = Key(role, slot);
+        if (slot is < 1 or > MaxHelperSlots || !grants.TryGetValue(key, out var old)) throw new StudioException(StudioError.permissionDenied);
         var grant = await Grant($"roles/{Id(old.RoleId)}/renew", new JsonObject { ["fence"] = old.Fence }, cancellation);
         if (grant.RunId != old.RunId || grant.RoleId != old.RoleId || grant.Role != role || grant.Fence <= old.Fence
-            || grant.ModelId != old.ModelId || grant.ProviderModelId != old.ProviderModelId || grant.ProfileId != old.ProfileId) throw new StudioException(StudioError.identityChanged);
-        grants[role] = grant; return grant;
+            || grant.ModelId != old.ModelId || grant.ProviderModelId != old.ProviderModelId || grant.ProfileId != old.ProfileId
+            || (grant.Slot is { } granted && granted != slot)) throw new StudioException(StudioError.identityChanged);
+        grants[key] = grant; return grant;
     }
 
     // Closing the run may carry the runtime's process report (counts and
-    // outcomes only), sent to a Studio whose Harness has a workflow.
-    public async Task CloseAsync(string role = "", JsonObject? process = null, CancellationToken cancellation = default)
+    // outcomes only), sent to a Studio whose Harness has a workflow. A helper's
+    // slot past the first is closed by naming it; slot 1 keeps the old body.
+    public async Task CloseAsync(string role = "", JsonObject? process = null, int slot = 1, CancellationToken cancellation = default)
     {
         var whole = role.Length == 0 || role == "main";
+        if (slot is < 1 or > MaxHelperSlots || (whole && slot != 1)) throw new StudioException(StudioError.permissionDenied);
+        var key = Key(role, slot);
         // The runtime's retry of a close Studio did not confirm reaches Studio
         // again for that run (closing twice is safe there).
         if ((root ?? (whole ? unconfirmed : null)) is not { } run) return;
-        if (!whole && !grants.ContainsKey(role)) throw new StudioException(StudioError.permissionDenied);
+        if (!whole && !grants.ContainsKey(key)) throw new StudioException(StudioError.permissionDenied);
         var body = new JsonObject { ["role"] = role };
+        if (!whole && slot > 1) body["slot"] = slot;
         if (process is not null)
         {
             if (!whole || !StudioProcessReport.Valid(process, Manifest.ProcessVersions ?? [1])) throw new StudioException(StudioError.invalidResponse);
@@ -152,7 +168,7 @@ public sealed class StudioManagedBroker
         // next start; Studio settles it when its lease lapses. Only a refused
         // report keeps it, so the runtime can close without one.
         catch (Exception error) when (whole && (error as StudioException)?.Code != StudioError.invalidResponse) { unconfirmed = run; root = null; grants.Clear(); throw; }
-        if (whole) { root = null; unconfirmed = null; grants.Clear(); } else grants.Remove(role);
+        if (whole) { root = null; unconfirmed = null; grants.Clear(); } else grants.Remove(key);
     }
 
     // The manifest for the runtime, with what this broker accepts beyond the
@@ -163,6 +179,7 @@ public sealed class StudioManagedBroker
         var features = new JsonArray("process");
         foreach (var version in new[] { 2, 3 }.Where(v => Manifest.ProcessVersions?.Contains(v) == true)) features.Add($"process-v{version}");
         features.Add("close-retry"); // a close Studio did not confirm is sent again when asked again
+        if ((Manifest.HelperSlots ?? 1) >= 2) features.Add("helper-slots"); // more than one grant of a helper role at once ("slot")
         value["broker_features"] = features;
         return value;
     }

@@ -25,8 +25,17 @@ public enum StudioManagedBrokerCommand {
         guard case .object(var out) = try JSONDecoder().decode(StudioJSONValue.self, from: encoder.encode(manifest)) else { throw StudioError.invalidResponse }
         // Version 2 reports only to a Studio that lists them.
         // close-retry: a close Studio did not confirm is sent again when asked again.
-        out["broker_features"] = .array([.string("process")] + [2, 3].filter { manifest.processVersions?.contains($0) == true }.map { .string("process-v\($0)") } + [.string("close-retry")])
+        // helper-slots: more than one grant of a helper role at once ("slot").
+        out["broker_features"] = .array([.string("process")] + [2, 3].filter { manifest.processVersions?.contains($0) == true }.map { .string("process-v\($0)") } + [.string("close-retry")]
+            + ((manifest.helperSlots ?? 1) >= 2 ? [.string("helper-slots")] : []))
         return .object(out)
+    }
+    /// A command's helper slot: an integer 1...3, absent meaning 1.
+    static func slotValue(_ raw: Any?) throws -> Int {
+        guard let raw else { return 1 }
+        guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), let slot = Int(exactly: number.doubleValue),
+              (1...StudioManagedBroker.maxHelperSlots).contains(slot) else { throw StudioError.invalidResponse }
+        return slot
     }
     static func processValue(_ raw: Any?) throws -> [String: StudioJSONValue]? {
         guard let raw else { return nil }
@@ -64,8 +73,9 @@ public enum StudioManagedBrokerCommand {
                     guard let message = try JSONSerialization.jsonObject(with: line) as? [String: Any],
                           let requestID = message["id"] as? String, UUID(uuidString: requestID) != nil,
                           let action = message["action"] as? String,
-                          Set(message.keys).isSubset(of: ["id", "action", "operation_id", "effort", "task_class", "role", "run_id", "process"]) else { throw StudioError.invalidResponse }
+                          Set(message.keys).isSubset(of: ["id", "action", "operation_id", "effort", "task_class", "role", "run_id", "process", "slot"]) else { throw StudioError.invalidResponse }
                     id = requestID
+                    let slot = try slotValue(message["slot"])
                     if broker == nil {
                         guard action == "config" else { throw StudioError.permissionDenied }
                         if let factory { broker = try await factory(arguments[1]) }
@@ -84,15 +94,15 @@ public enum StudioManagedBrokerCommand {
                         output(id, try value(await active.start(operation: operation, effort: effort, taskClass: taskClass)))
                     case "child":
                         guard let role = message["role"] as? String else { throw StudioError.invalidResponse }
-                        output(id, try value(await active.child(role: role)))
+                        output(id, try value(await active.child(role: role, slot: slot)))
                     case "recover":
                         guard let raw = message["run_id"] as? String, let runID = UUID(uuidString: raw) else { throw StudioError.invalidResponse }
                         output(id, try value(await active.recover(runID: runID)))
                     case "renew":
                         guard let role = message["role"] as? String else { throw StudioError.invalidResponse }
-                        output(id, try value(await active.renew(role: role)))
+                        output(id, try value(await active.renew(role: role, slot: slot)))
                     case "close":
-                        try await active.close(role: message["role"] as? String ?? "", process: try processValue(message["process"])); output(id, .bool(true))
+                        try await active.close(role: message["role"] as? String ?? "", slot: slot, process: try processValue(message["process"])); output(id, .bool(true))
                     default: throw StudioError.permissionDenied
                     }
                 } catch let refusal as StudioManagedRefusal { output(id, nil, error: refusal.error.rawValue, studioCode: refusal.code) }

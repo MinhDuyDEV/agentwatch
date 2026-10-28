@@ -260,6 +260,70 @@ private actor ManagedTransport: StudioHTTPTransport {
         XCTAssertEqual(sent.count, 3)
         XCTAssertTrue(sent[2].url?.path.hasSuffix("/close") == true)
     }
+    /// Up to three grants of one helper role at once: slot 1 keeps the role's
+    /// key and the old body; a slot past the first names itself and needs a
+    /// Studio that offers that many; closing one slot keeps the others.
+    func testHelperSlotsHoldSeveralGrantsOfOneRole() async throws {
+        let (profile, base) = try configuration()
+        var manifest = base; manifest.helperSlots = 3
+        let device = StudioManagedDevice(deviceID: deviceID, token: token("device", deviceID), expiresAt: Date(), instanceID: instance, epoch: epoch, generation: 1)
+        var second = grant(role: "research"); second["slot"] = 2
+        var wrong = grant(role: "research"); wrong["slot"] = 2
+        let transport = ManagedTransport([(201, grant()), (201, grant(role: "research")), (201, second), (200, { var g = second; g["fence"] = 2; return g }()), (204, [:]), (201, wrong), (204, [:])])
+        let slots = try StudioManagedBroker(profile: profile, manifest: manifest, device: device, client: StudioManagedClient(transport: transport))
+        _ = try await slots.start(operation: UUID(), effort: "medium", taskClass: "standard")
+        let one = try await slots.child(role: "research"), two = try await slots.child(role: "research", slot: 2)
+        XCTAssertNil(one.slot); XCTAssertEqual(two.slot, 2)
+        do { _ = try await slots.child(role: "research", slot: 2); XCTFail("duplicate slot") } catch { XCTAssertEqual(error as? StudioError, .permissionDenied) }
+        do { _ = try await slots.child(role: "research", slot: 4); XCTFail("slot out of range") } catch { XCTAssertEqual(error as? StudioError, .permissionDenied) }
+        let renewed = try await slots.renew(role: "research", slot: 2); XCTAssertEqual(renewed.fence, 2)
+        try await slots.close(role: "research", slot: 2)
+        // Slot 1 is still held; slot 2 is free again, and Studio must grant the slot asked for.
+        do { _ = try await slots.child(role: "research"); XCTFail("slot 1 was closed") } catch { XCTAssertEqual(error as? StudioError, .permissionDenied) }
+        do { _ = try await slots.child(role: "research", slot: 3); XCTFail("wrong slot accepted") } catch { XCTAssertEqual(error as? StudioError, .invalidResponse) }
+        try await slots.close(role: "research")
+        let sent = await transport.captured()
+        func body(_ i: Int) -> [String: Any] { (try? JSONSerialization.jsonObject(with: sent[i].httpBody ?? Data())) as? [String: Any] ?? [:] }
+        XCTAssertEqual(body(1).keys.sorted(), ["role"], "slot 1 keeps the old body")
+        XCTAssertEqual(body(2)["slot"] as? Int, 2)
+        XCTAssertTrue(sent[3].url?.path.hasSuffix("/roles/\(childID.uuidString.lowercased())/renew") == true)
+        XCTAssertEqual(body(4).keys.sorted(), ["role", "slot"]); XCTAssertEqual(body(4)["slot"] as? Int, 2)
+        XCTAssertEqual(body(5)["slot"] as? Int, 3)
+        XCTAssertEqual(body(6).keys.sorted(), ["role"], "closing slot 1 keeps the old body")
+        XCTAssertEqual(sent.count, 7)
+        // An older Studio (no helper_slots) is never asked for a second slot.
+        let old = try broker(ManagedTransport([(201, grant()), (201, grant(role: "research"))]))
+        _ = try await old.start(operation: UUID(), effort: "medium", taskClass: "standard")
+        do { _ = try await old.child(role: "research", slot: 2); XCTFail("slot without helper_slots") } catch { XCTAssertEqual(error as? StudioError, .permissionDenied) }
+        var two2 = base; two2.helperSlots = 2
+        let limited = try StudioManagedBroker(profile: profile, manifest: two2, device: device, client: StudioManagedClient(transport: ManagedTransport([(201, grant())])))
+        _ = try await limited.start(operation: UUID(), effort: "medium", taskClass: "standard")
+        do { _ = try await limited.child(role: "research", slot: 3); XCTFail("slot past helper_slots") } catch { XCTAssertEqual(error as? StudioError, .permissionDenied) }
+        do { try await limited.close(role: "main", slot: 2); XCTFail("slot on whole-run close") } catch { XCTAssertEqual(error as? StudioError, .permissionDenied) }
+        // Features advertise helper-slots only for a Studio with two or more.
+        func features(_ m: StudioManifest) throws -> [String] {
+            guard case .object(let out) = try StudioManagedBrokerCommand.configValue(m), case .array(let list) = out["broker_features"] else { return [] }
+            return list.compactMap { if case .string(let s) = $0 { s } else { nil } }
+        }
+        XCTAssertEqual(try features(manifest), ["process", "close-retry", "helper-slots"])
+        XCTAssertEqual(try features(base), ["process", "close-retry"])
+        var single = base; single.helperSlots = 1
+        XCTAssertFalse(try features(single).contains("helper-slots"))
+        guard case .object(let out) = try StudioManagedBrokerCommand.configValue(manifest) else { return XCTFail("config") }
+        XCTAssertEqual(out["helper_slots"].flatMap { if case .number(let n) = $0 { n } else { nil } }, 3)
+        let decoded = try StudioClient.apiDecoder().decode(StudioManifest.self, from: JSONEncoder().encode(StudioManagedBrokerCommand.configValue(manifest)))
+        XCTAssertEqual(decoded.helperSlots, 3)
+        // The command protocol takes an integer slot 1...3 only.
+        XCTAssertEqual(try StudioManagedBrokerCommand.slotValue(nil), 1)
+        for raw in ["{\"slot\":1}", "{\"slot\":3}", "{\"slot\":2.0}"] {
+            let message = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as! [String: Any]
+            XCTAssertNoThrow(try StudioManagedBrokerCommand.slotValue(message["slot"]), raw)
+        }
+        for raw in ["{\"slot\":0}", "{\"slot\":4}", "{\"slot\":1.5}", "{\"slot\":\"2\"}", "{\"slot\":true}", "{\"slot\":null}", "{\"slot\":-1}"] {
+            let message = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as! [String: Any]
+            XCTAssertThrowsError(try StudioManagedBrokerCommand.slotValue(message["slot"]), raw)
+        }
+    }
     func testRenewCannotChangePinnedModel() async throws {
         let transport = ManagedTransport([(201, grant()), (200, grant(fence: 2, model: "other-account"))])
         let broker = try broker(transport)

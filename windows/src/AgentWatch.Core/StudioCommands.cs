@@ -43,7 +43,17 @@ public static class StudioCommands
         return 1;
     }
 
-    static readonly HashSet<string> Fields = ["id", "action", "operation_id", "effort", "task_class", "role", "run_id", "process"];
+    static readonly HashSet<string> Fields = ["id", "action", "operation_id", "effort", "task_class", "role", "run_id", "process", "slot"];
+
+    // A command's helper slot: an integer 1...3, absent meaning 1.
+    internal static int Slot(JsonObject message)
+    {
+        if (!message.ContainsKey("slot")) return 1;
+        if (message["slot"] is not JsonValue value || value.GetValueKind() != JsonValueKind.Number
+            || !double.TryParse(value.ToJsonString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var number)
+            || number % 1 != 0 || number is < 1 or > StudioManagedBroker.MaxHelperSlots) throw new StudioException(StudioError.invalidResponse);
+        return (int)number;
+    }
 
     // Private stdio RPC for the pinned managed runtime: one JSON request per
     // line, one answer per line. The first request must be `config`.
@@ -71,6 +81,7 @@ public static class StudioCommands
                     || !message.All(pair => Fields.Contains(pair.Key))) throw new StudioException(StudioError.invalidResponse);
                 id = message["id"]!.GetValue<string>();
                 var action = message["action"]!.GetValue<string>();
+                var slot = Slot(message);
                 string Text(string name) => message[name]?.GetValueKind() == JsonValueKind.String ? message[name]!.GetValue<string>() : throw new StudioException(StudioError.invalidResponse);
                 if (broker is null)
                 {
@@ -83,14 +94,14 @@ public static class StudioCommands
                     case "start":
                         if (!Guid.TryParseExact(Text("operation_id"), "D", out var operation)) throw new StudioException(StudioError.invalidResponse);
                         Answer(id, StudioJson.ToNode(await broker.StartAsync(operation, Text("effort"), Text("task_class"), cancellation))); break;
-                    case "child": Answer(id, StudioJson.ToNode(await broker.ChildAsync(Text("role"), cancellation))); break;
+                    case "child": Answer(id, StudioJson.ToNode(await broker.ChildAsync(Text("role"), slot, cancellation))); break;
                     case "recover":
                         if (!Guid.TryParseExact(Text("run_id"), "D", out var run)) throw new StudioException(StudioError.invalidResponse);
                         Answer(id, StudioJson.ToNode(await broker.RecoverAsync(run, cancellation))); break;
-                    case "renew": Answer(id, StudioJson.ToNode(await broker.RenewAsync(Text("role"), cancellation))); break;
+                    case "renew": Answer(id, StudioJson.ToNode(await broker.RenewAsync(Text("role"), slot, cancellation))); break;
                     case "close":
                         var process = message["process"] switch { null => null, JsonObject report => report, _ => throw new StudioException(StudioError.invalidResponse) };
-                        await broker.CloseAsync(message["role"]?.GetValueKind() == JsonValueKind.String ? message["role"]!.GetValue<string>() : "", process, cancellation);
+                        await broker.CloseAsync(message["role"]?.GetValueKind() == JsonValueKind.String ? message["role"]!.GetValue<string>() : "", process, slot, cancellation);
                         Answer(id, JsonValue.Create(true)); break;
                     default: throw new StudioException(StudioError.permissionDenied);
                 }

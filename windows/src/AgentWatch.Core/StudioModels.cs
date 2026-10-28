@@ -158,6 +158,8 @@ public sealed record StudioManifest(
     [property: JsonPropertyName("harness")] StudioHarness? Harness = null,
     [property: JsonPropertyName("thinking_levels")] string[]? ThinkingLevels = null,
     [property: JsonPropertyName("process_versions")] int[]? ProcessVersions = null,
+    // How many grants of one helper role Studio holds at once (absent on an older Studio: one).
+    [property: JsonPropertyName("helper_slots")] int? HelperSlots = null,
     [property: JsonPropertyName("key_label")] string? KeyLabel = null,
     [property: JsonPropertyName("key_prefix")] string? KeyPrefix = null,
     [property: JsonPropertyName("credential_mode")] StudioCredentialMode? CredentialMode = null)
@@ -203,7 +205,9 @@ public sealed record StudioRunGrant(
     [property: JsonPropertyName("profile_id")] Guid ProfileId,
     [property: JsonPropertyName("studio_instance_id")] Guid InstanceId,
     [property: JsonPropertyName("dataset_epoch")] Guid Epoch,
-    [property: JsonPropertyName("auth_generation")] long Generation)
+    [property: JsonPropertyName("auth_generation")] long Generation,
+    // The helper slot Studio granted (a Studio with helper slots may state it).
+    [property: JsonPropertyName("slot")] int? Slot = null)
 {
     public StudioAuthority Authority => new(InstanceId, Epoch, Generation);
 

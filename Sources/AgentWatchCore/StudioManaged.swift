@@ -80,8 +80,10 @@ public struct StudioRunGrant: Codable, Sendable {
     public let instanceID: UUID
     public let epoch: UUID
     public let generation: Int64
+    /// The helper slot Studio granted (a Studio with helper slots may state it).
+    public var slot: Int? = nil
     enum CodingKeys: String, CodingKey {
-        case runID = "run_id", roleID = "role_id", role, modelID = "model_id", provider, providerModelID = "provider_model_id", effort, fence, token, expiresAt = "expires_at", profileID = "profile_id", instanceID = "studio_instance_id", epoch = "dataset_epoch", generation = "auth_generation"
+        case runID = "run_id", roleID = "role_id", role, modelID = "model_id", provider, providerModelID = "provider_model_id", effort, fence, token, expiresAt = "expires_at", profileID = "profile_id", instanceID = "studio_instance_id", epoch = "dataset_epoch", generation = "auth_generation", slot
     }
     var authority: StudioAuthority { StudioAuthority(instanceID: instanceID, epoch: epoch, generation: generation) }
     func validate(authority: StudioAuthority) throws {
@@ -201,12 +203,21 @@ public struct StudioManagedClient: Sendable {
         guard grant.role == "main" else { throw StudioError.invalidResponse }
         root = grant.runID; unconfirmed = nil; grants["main"] = grant; return grant
     }
-    public func child(role: String) async throws -> StudioRunGrant {
-        guard StudioHarness.helperRoles.contains(role), let root, grants[role] == nil else { throw StudioError.permissionDenied }
-        let grant: StudioRunGrant = try await client.post(profile.origin, "runs/\(root.uuidString.lowercased())/children", credential: device.token, body: ["role": .string(role)])
+    /// The most helper slots a broker command may name.
+    public nonisolated static let maxHelperSlots = 3
+    /// Slot 1 keeps the role's own key, so a runtime without slots is unchanged.
+    nonisolated static func key(role: String, slot: Int) -> String { slot > 1 ? "\(role)#\(slot)" : role }
+    public func child(role: String, slot: Int = 1) async throws -> StudioRunGrant {
+        let key = Self.key(role: role, slot: slot)
+        guard StudioHarness.helperRoles.contains(role), (1...Self.maxHelperSlots).contains(slot), slot == 1 || (manifest.helperSlots ?? 1) >= slot,
+              let root, grants[key] == nil else { throw StudioError.permissionDenied }
+        // Only a slot past the first names itself: an older Studio never sees the field.
+        var body: [String: StudioJSONValue] = ["role": .string(role)]
+        if slot > 1 { body["slot"] = .number(Double(slot)) }
+        let grant: StudioRunGrant = try await client.post(profile.origin, "runs/\(root.uuidString.lowercased())/children", credential: device.token, body: body)
         try grant.validate(authority: device.authority)
-        guard grant.runID == root, grant.role == role else { throw StudioError.invalidResponse }
-        grants[role] = grant; return grant
+        guard grant.runID == root, grant.role == role, grant.slot.map({ $0 == slot }) ?? true else { throw StudioError.invalidResponse }
+        grants[key] = grant; return grant
     }
     public func recover(runID: UUID) async throws -> StudioRunGrant {
         guard root == nil else { throw StudioError.permissionDenied }
@@ -215,24 +226,30 @@ public struct StudioManagedClient: Sendable {
         guard grant.runID == runID, grant.role == "main" else { throw StudioError.identityChanged }
         root = runID; unconfirmed = nil; grants["main"] = grant; return grant
     }
-    public func renew(role: String) async throws -> StudioRunGrant {
-        guard let old = grants[role] else { throw StudioError.permissionDenied }
+    public func renew(role: String, slot: Int = 1) async throws -> StudioRunGrant {
+        let key = Self.key(role: role, slot: slot)
+        guard (1...Self.maxHelperSlots).contains(slot), let old = grants[key] else { throw StudioError.permissionDenied }
         let grant: StudioRunGrant = try await client.post(profile.origin, "roles/\(old.roleID.uuidString.lowercased())/renew", credential: device.token, body: ["fence": .number(Double(old.fence))])
         try grant.validate(authority: device.authority)
         guard grant.runID == old.runID, grant.roleID == old.roleID, grant.role == role, grant.fence > old.fence,
-              grant.modelID == old.modelID, grant.providerModelID == old.providerModelID, grant.profileID == old.profileID else { throw StudioError.identityChanged }
-        grants[role] = grant; return grant
+              grant.modelID == old.modelID, grant.providerModelID == old.providerModelID, grant.profileID == old.profileID, grant.slot.map({ $0 == slot }) ?? true else { throw StudioError.identityChanged }
+        grants[key] = grant; return grant
     }
     /// Closing the run may carry the runtime's process report (counts and
     /// outcomes only). It goes to a Studio that sends a workflow: an older
     /// Studio refuses unknown fields.
-    public func close(role: String = "", process: [String: StudioJSONValue]? = nil) async throws {
+    /// A helper's slot past the first is closed by naming it; slot 1 keeps
+    /// the body an older Studio takes.
+    public func close(role: String = "", slot: Int = 1, process: [String: StudioJSONValue]? = nil) async throws {
         let whole = role.isEmpty || role == "main"
+        guard (1...Self.maxHelperSlots).contains(slot), !whole || slot == 1 else { throw StudioError.permissionDenied }
+        let key = Self.key(role: role, slot: slot)
         // The runtime's retry of a close Studio did not confirm reaches Studio
         // again for that run (closing twice is safe there).
         guard let run = root ?? (whole ? unconfirmed : nil) else { return }
-        guard whole || grants[role] != nil else { throw StudioError.permissionDenied }
+        guard whole || grants[key] != nil else { throw StudioError.permissionDenied }
         var body: [String: StudioJSONValue] = ["role": .string(role)]
+        if !whole, slot > 1 { body["slot"] = .number(Double(slot)) }
         if let process {
             guard whole, StudioProcessReport.valid(process, versions: manifest.processVersions ?? [1]) else { throw StudioError.invalidResponse }
             if manifest.harness?.configuration.workflow != nil { body["process"] = .object(process) }
@@ -248,7 +265,7 @@ public struct StudioManagedClient: Sendable {
             if whole, kind != .invalidResponse { unconfirmed = run; self.root = nil; grants.removeAll() }
             throw error
         }
-        if whole { self.root = nil; unconfirmed = nil; grants.removeAll() } else { grants.removeValue(forKey: role) }
+        if whole { self.root = nil; unconfirmed = nil; grants.removeAll() } else { grants.removeValue(forKey: key) }
     }
 }
 

@@ -15,11 +15,18 @@ sealed class FakeStudio : IStudioTransport
     public static readonly Guid Instance = Guid.Parse("21212121-4343-4656-8787-090909090909"), Epoch = Guid.Parse("31313131-4343-4656-8787-090909090909");
     public static readonly Guid Run = Guid.Parse("41414141-4343-4656-8787-090909090909"), Device = Guid.Parse("51515151-4343-4656-8787-090909090909");
     public bool Workflow = true;
+    public int? HelperSlots; // a Studio with helper slots states how many
     int fence;
     static string Tail => new('A', 43);
     public static string RunToken(Guid role) => $"as_run_{role:D}_{Tail}";
 
-    public static JsonObject Manifest(bool workflow = true) => new()
+    public static JsonObject Manifest(bool workflow = true, int? helperSlots = null)
+    {
+        var manifest = Manifest(workflow);
+        if (helperSlots is { } slots) manifest["helper_slots"] = slots;
+        return manifest;
+    }
+    public static JsonObject Manifest(bool workflow) => new()
     {
         ["schema_version"] = 2, ["revision"] = new string('a', 64), ["org_id"] = Org.ToString(), ["key_id"] = Key.ToString(),
         ["credential_mode"] = "managed", ["expires_at"] = "2099-01-01T00:00:00.123Z", ["refresh_seconds"] = 300,
@@ -35,7 +42,14 @@ sealed class FakeStudio : IStudioTransport
         ["thinking_levels"] = new JsonArray("low", "medium", "high"), ["process_versions"] = new JsonArray(1, 2, 3),
     };
 
-    JsonObject Grant(string role, Guid roleId) => new()
+    // Grants are kept per role and slot ("research#2"); a slot past the first is stated.
+    JsonObject Grant(string key, Guid roleId)
+    {
+        var grant = Grant(key.Split('#')[0], roleId, true);
+        if (key.Contains('#')) grant["slot"] = int.Parse(key.Split('#')[1]);
+        return grant;
+    }
+    JsonObject Grant(string role, Guid roleId, bool _) => new()
     {
         ["run_id"] = Run.ToString(), ["role_id"] = roleId.ToString(), ["role"] = role, ["model_id"] = "gpt-6-sol", ["provider"] = "codex",
         ["provider_model_id"] = "gpt-6-sol", ["effort"] = "medium", ["fence"] = ++fence, ["token"] = RunToken(roleId),
@@ -43,6 +57,11 @@ sealed class FakeStudio : IStudioTransport
         ["studio_instance_id"] = Instance.ToString(), ["dataset_epoch"] = Epoch.ToString(), ["auth_generation"] = 4,
     };
     readonly Dictionary<string, Guid> roles = [];
+    JsonObject ChildGrant(JsonObject body)
+    {
+        var key = body["role"]!.GetValue<string>() + (body["slot"] is { } slot ? "#" + slot.GetValue<int>() : "");
+        return Grant(key, roles[key] = Guid.NewGuid());
+    }
 
     public async Task<StudioHttpResponse> SendAsync(HttpRequestMessage request, StudioOrigin origin, CancellationToken cancellation = default)
     {
@@ -57,11 +76,11 @@ sealed class FakeStudio : IStudioTransport
                 ["user"] = new JsonObject { ["id"] = User.ToString(), ["display_name"] = "Nguyễn Văn A", ["role"] = "member", ["active"] = true, ["version"] = 3 } },
             "v1/models" => new JsonObject { ["object"] = "list", ["admission_required"] = true, ["data"] = new JsonArray(new JsonObject { ["id"] = "gpt-6-sol",
                 ["display_name"] = "Sol", ["owned_by"] = "codex", ["protocol"] = "responses" }) },
-            "studio/v1/client-config" => Manifest(Workflow),
+            "studio/v1/client-config" => Manifest(Workflow, HelperSlots),
             "studio/v1/managed/devices" => new JsonObject { ["device_id"] = Device.ToString(), ["token"] = $"as_device_{Device:D}_{Tail}", ["expires_at"] = "2099-01-01T00:00:00Z",
                 ["studio_instance_id"] = Instance.ToString(), ["dataset_epoch"] = Epoch.ToString(), ["auth_generation"] = 4 },
             "studio/v1/managed/runs" => Grant("main", roles["main"] = Guid.NewGuid()),
-            _ when path.EndsWith("/children") => Grant(body!["role"]!.GetValue<string>(), roles[body["role"]!.GetValue<string>()] = Guid.NewGuid()),
+            _ when path.EndsWith("/children") => ChildGrant(body!),
             _ when path.StartsWith("studio/v1/managed/roles/") => Grant(roles.First(r => path.Contains(r.Value.ToString())).Key, roles.First(r => path.Contains(r.Value.ToString())).Value),
             _ when path.EndsWith("/close") => null,
             _ => throw new InvalidOperationException(path),
@@ -266,6 +285,57 @@ public class BrokerTests : IDisposable
         var sent = studio.Requests.Where(r => r.Path.EndsWith("/close")).Select(r => r.Path).ToList();
         Assert.Equal(3, sent.Count); // the failed close, its retry, then the second run's close at exit
         Assert.Equal(sent[0], sent[1]);
+    }
+
+    // Up to three grants of one helper role at once: slot 1 keeps the role's
+    // key and the old body; a slot past the first names itself and needs a
+    // Studio that offers that many; closing one slot keeps the others.
+    [Fact]
+    public async Task HelperSlotsHoldSeveralGrantsOfOneRole()
+    {
+        var (studio, profile, key) = await Connected();
+        studio.HelperSlots = 3;
+        JsonObject Start() => Ask("start", new() { ["operation_id"] = Guid.NewGuid().ToString(), ["effort"] = "medium", ["task_class"] = "standard" });
+        var answers = await Talk(studio, profile, key, Ask("config"), Start(),
+            Ask("child", new() { ["role"] = "review" }), Ask("child", new() { ["role"] = "review", ["slot"] = 2 }), Ask("child", new() { ["role"] = "review", ["slot"] = 2 }),
+            Ask("renew", new() { ["role"] = "review", ["slot"] = 2 }), Ask("close", new() { ["role"] = "review", ["slot"] = 2 }),
+            Ask("child", new() { ["role"] = "review" }), Ask("child", new() { ["role"] = "review", ["slot"] = 3 }), Ask("close", new() { ["role"] = "review" }),
+            Ask("child", new() { ["role"] = "review", ["slot"] = 4 }), Ask("child", new() { ["role"] = "review", ["slot"] = 1.5 }), Ask("child", new() { ["role"] = "review", ["slot"] = "2" }),
+            Ask("child", new() { ["role"] = "review", ["slot"] = true }), Ask("child", new() { ["role"] = "review", ["slot"] = null }), Ask("child", new() { ["role"] = "review", ["slot"] = 0 }),
+            Ask("close", new() { ["role"] = "", ["slot"] = 2 }));
+        Assert.Equal(["process", "process-v2", "process-v3", "close-retry", "helper-slots"], answers[0]["result"]!["broker_features"]!.AsArray().Select(n => n!.GetValue<string>()));
+        Assert.Equal(3, answers[0]["result"]!["helper_slots"]!.GetValue<int>());
+        Assert.Null(answers[2]["error"]); Assert.Null(answers[3]["error"]);
+        Assert.False(answers[2]["result"]!.AsObject().ContainsKey("slot"));
+        Assert.Equal(2, answers[3]["result"]!["slot"]!.GetValue<int>());
+        Assert.Equal("permissionDenied", answers[4]["error"]!.GetValue<string>()); // slot 2 already held
+        Assert.Null(answers[5]["error"]); Assert.Null(answers[6]["error"]);
+        Assert.Equal("permissionDenied", answers[7]["error"]!.GetValue<string>()); // slot 1 still held after slot 2 closed
+        Assert.Null(answers[8]["error"]); Assert.Null(answers[9]["error"]);
+        Assert.All(answers.Skip(10).Take(6), a => Assert.Equal("invalidResponse", a["error"]!.GetValue<string>()));
+        Assert.Equal("permissionDenied", answers[16]["error"]!.GetValue<string>()); // the whole run has no slot
+        var children = studio.Requests.Where(r => r.Path.EndsWith("/children")).Select(r => r.Body!).ToList();
+        Assert.Equal(3, children.Count);
+        Assert.False(children[0].ContainsKey("slot"), "slot 1 keeps the old body");
+        Assert.Equal(2, children[1]["slot"]!.GetValue<int>());
+        Assert.Equal(3, children[2]["slot"]!.GetValue<int>());
+        var closes = studio.Requests.Where(r => r.Path.EndsWith("/close")).Select(r => r.Body!).ToList();
+        Assert.Equal(["role", "slot"], closes[0].Select(p => p.Key).Order());
+        Assert.Equal(2, closes[0]["slot"]!.GetValue<int>());
+        Assert.Equal(["role"], closes[1].Select(p => p.Key)); // closing slot 1 keeps the old body
+        Assert.Equal("review", closes[1]["role"]!.GetValue<string>());
+
+        // An older Studio (no helper_slots) is never asked for a second slot, nor one past what it offers.
+        foreach (var (offered, asked) in new (int?, int)[] { (null, 2), (2, 3) })
+        {
+            var (old, oldProfile, oldKey) = await Connected();
+            old.HelperSlots = offered;
+            answers = await Talk(old, oldProfile, oldKey, Ask("config"), Start(), Ask("child", new() { ["role"] = "review", ["slot"] = asked }));
+            Assert.Equal("permissionDenied", answers[2]["error"]!.GetValue<string>());
+            Assert.Equal(offered is null ? new[] { "process", "process-v2", "process-v3", "close-retry" } : new[] { "process", "process-v2", "process-v3", "close-retry", "helper-slots" },
+                answers[0]["result"]!["broker_features"]!.AsArray().Select(n => n!.GetValue<string>()));
+            Assert.DoesNotContain(old.Requests, r => r.Path.EndsWith("/children"));
+        }
     }
 
     [Fact]
