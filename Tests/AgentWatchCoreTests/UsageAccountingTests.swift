@@ -188,5 +188,7 @@ final class UsageAccountingTests: XCTestCase {
         XCTAssertEqual(roots.claudeProjects, "/tmp/cc/projects")
         XCTAssertEqual(roots.codexArchived, "/tmp/cx/archived_sessions")
         XCTAssertEqual(roots.piSessions, "/tmp/pi")
+        XCTAssertEqual(roots.piagentSessions, "/tmp/home/.piagent/agent/sessions")
+        XCTAssertEqual(AgentLogRoots(home: "/tmp/home", environment: ["PIAGENT_AGENT_DIR": "/srv/piagent"]).piagentSessions, "/srv/piagent/sessions")
     }
 }

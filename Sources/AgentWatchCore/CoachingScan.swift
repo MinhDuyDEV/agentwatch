@@ -133,7 +133,7 @@ public enum CoachingScan {
                                           readable: after.readable && prior.readable,
                                           changedDuringRead: after.changedDuringRead || prior.changedDuringRead || after.sha256 != prior.sha256)
             } : [],
-            sourceRoots: [roots.claudeProjects, roots.claudeDesktop, roots.codexSessions, roots.codexArchived, roots.piSessions].map(SourceRootManifest.init)
+            sourceRoots: [roots.claudeProjects, roots.claudeDesktop, roots.codexSessions, roots.codexArchived, roots.piSessions, roots.piagentSessions].map(SourceRootManifest.init)
         )
         result.catalogFingerprint = fingerprint
         result.aggregate = SessionInventory.aggregate(result.sessions)
@@ -229,6 +229,16 @@ public enum CoachingScan {
             range: range,
             into: &out
         )
+        if roots.piagentSessions != roots.piSessions {
+            collectRecursiveJsonl(
+                root: roots.piagentSessions,
+                source: .piagent,
+                slug: "piagent-home",
+                display: "PiAgent",
+                range: range,
+                into: &out
+            )
+        }
         return out
     }
 

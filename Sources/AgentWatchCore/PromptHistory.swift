@@ -105,11 +105,13 @@ public enum PromptHistory {
     }
 
     private static func loadPiAgentPrompts(in range: Range<Date>) -> [PromptRecord] {
-        loadRecursiveJsonlPrompts(
-            root: PiAgentInventory.defaultRoot,
-            range: range,
-            extractor: PiAgentJsonlParser.extractPrompts
-        )
+        PiAgentInventory.defaultRoots.flatMap { root in
+            loadRecursiveJsonlPrompts(
+                root: root,
+                range: range,
+                extractor: PiAgentJsonlParser.extractPrompts
+            )
+        }
     }
 
     private static func loadRecursiveJsonlPrompts(

@@ -2,8 +2,14 @@ import Foundation
 
 public enum PiAgentInventory {
     public static var defaultRoot: String { AgentLogRoots.current.piSessions }
+    /// Stock pi and Piagent's own home.
+    public static var defaultRoots: [String] { AgentLogRoots.current.piSessionRoots }
 
-    public static func list(in range: Range<Date>, root: String = defaultRoot) -> [SessionSummary] {
+    public static func list(in range: Range<Date>, roots: [String] = defaultRoots) -> [SessionSummary] {
+        roots.flatMap { list(in: range, root: $0) }
+    }
+
+    public static func list(in range: Range<Date>, root: String) -> [SessionSummary] {
         let fm = FileManager.default
         guard fm.fileExists(atPath: root),
               let enumerator = fm.enumerator(

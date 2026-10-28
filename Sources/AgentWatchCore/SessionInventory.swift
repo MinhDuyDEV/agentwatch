@@ -284,7 +284,7 @@ public enum SessionInventory {
         out.append(contentsOf: listDesktopAgent(in: range))
         // v0.7.0: Codex sessions từ ~/.codex/sessions/.
         out.append(contentsOf: CodexInventory.list(in: range))
-        // v0.9.0: PiAgent sessions từ ~/.pi/agent/sessions/, gồm subagent runs.
+        // v0.9.0: PiAgent sessions từ ~/.pi/agent/sessions/ và ~/.piagent/agent/sessions/, gồm subagent runs.
         out.append(contentsOf: PiAgentInventory.list(in: range))
 
         // Sort cost first, then totalTokens so subscription/zero-cost agent logs

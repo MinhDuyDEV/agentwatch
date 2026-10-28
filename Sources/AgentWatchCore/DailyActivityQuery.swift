@@ -18,7 +18,7 @@ public actor DailyActivityQuery {
             .appendingPathComponent("com.vtamm.agentwatch/daily-activity-v2"))
     }
     private func key(_ profile: EmployeeProfile, _ period: DailyReportPeriod) throws -> String {
-        ReportEncoding.digest(try ReportEncoding.encode(profile)) + "-" + ReportEncoding.digest(Data([roots.claudeProjects, roots.claudeDesktop, roots.codexSessions, roots.codexArchived, roots.piSessions].joined(separator: "\n").utf8)) + "-" + String(Int(period.start.timeIntervalSince1970))
+        ReportEncoding.digest(try ReportEncoding.encode(profile)) + "-" + ReportEncoding.digest(Data([roots.claudeProjects, roots.claudeDesktop, roots.codexSessions, roots.codexArchived, roots.piSessions, roots.piagentSessions].joined(separator: "\n").utf8)) + "-" + String(Int(period.start.timeIntervalSince1970))
     }
     public func cached(profile: EmployeeProfile, day: Date, now: Date = Date()) throws -> DailyReportDraft? {
         let period = try DailyReportPeriod(day: day, timeZone: profile.timeZone, cutoff: now)

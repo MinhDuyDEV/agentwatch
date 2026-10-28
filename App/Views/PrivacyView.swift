@@ -12,6 +12,7 @@ struct PrivacyView: View {
     @State private var codexEntries: [FileEntry] = []
     @State private var codexArchivedEntries: [FileEntry] = []
     @State private var piAgentEntries: [FileEntry] = []
+    @State private var piagentHomeEntries: [FileEntry] = []
 
     private let cliRoot = NSHomeDirectory() + "/.claude/projects"
     private let desktopRoot = NSHomeDirectory() +
@@ -19,6 +20,7 @@ struct PrivacyView: View {
     private let codexRoot = CodexInventory.defaultRoot
     private let codexArchivedRoot = CodexInventory.defaultArchivedRoot
     private let piAgentRoot = PiAgentInventory.defaultRoot
+    private let piagentHomeRoot = AgentLogRoots.current.piagentSessions
 
     struct FileEntry: Identifiable, Hashable {
         let id: String   // absolute path
@@ -44,6 +46,8 @@ struct PrivacyView: View {
                              path: codexArchivedRoot, entries: codexArchivedEntries)
                     pathCard(title: "PiAgent sessions",
                              path: piAgentRoot, entries: piAgentEntries)
+                    pathCard(title: "Piagent sessions (own Pi home)",
+                             path: piagentHomeRoot, entries: piagentHomeEntries)
                     noUploadCard
                 }
                 .padding(20)
@@ -170,12 +174,16 @@ struct PrivacyView: View {
         let piAgent = await Task.detached(priority: .userInitiated) {
             Self.enumerate(rootPath: Self.staticPiAgentRoot, filename: nil)
         }.value
+        let piagentHome = await Task.detached(priority: .userInitiated) {
+            Self.enumerate(rootPath: Self.staticPiagentHomeRoot, filename: nil)
+        }.value
         await MainActor.run {
             self.cliEntries = cli
             self.desktopEntries = desk
             self.codexEntries = codex
             self.codexArchivedEntries = codexArchived
             self.piAgentEntries = piAgent
+            self.piagentHomeEntries = piagentHome
         }
     }
 
@@ -185,6 +193,7 @@ struct PrivacyView: View {
     nonisolated static let staticCodexRoot = CodexInventory.defaultRoot
     nonisolated static let staticCodexArchivedRoot = CodexInventory.defaultArchivedRoot
     nonisolated static let staticPiAgentRoot = PiAgentInventory.defaultRoot
+    nonisolated static let staticPiagentHomeRoot = AgentLogRoots.current.piagentSessions
 
     /// `filename`: nếu nil → match `*.jsonl`. Nếu set → chỉ collect file đúng tên đó.
     nonisolated static func enumerate(rootPath: String, filename: String?) -> [FileEntry] {

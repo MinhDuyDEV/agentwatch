@@ -73,7 +73,7 @@ public actor CoachingQueryStore {
 
     static func scopeKey(_ range: Range<Date>, roots: AgentLogRoots) -> String {
         key([String(range.lowerBound.timeIntervalSince1970), String(range.upperBound.timeIntervalSince1970),
-             roots.claudeProjects, roots.claudeDesktop, roots.codexSessions, roots.codexArchived, roots.piSessions])
+             roots.claudeProjects, roots.claudeDesktop, roots.codexSessions, roots.codexArchived, roots.piSessions, roots.piagentSessions])
     }
 
     static func fileKey(_ file: URL, source: SessionSource, range: Range<Date>) -> String {

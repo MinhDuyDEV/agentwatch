@@ -20,6 +20,22 @@ final class AgentInventoryTests: XCTestCase {
         try body.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    func testPiAgentInventoryReadsStockPiAndPiagentHome() throws {
+        let home = try makeTempDir("pi-homes")
+        let roots = AgentLogRoots(home: home.path, environment: [:])
+        XCTAssertEqual(roots.piSessionRoots, [home.path + "/.pi/agent/sessions", home.path + "/.piagent/agent/sessions"])
+        for (root, id) in [(roots.piSessions, "stock-pi"), (roots.piagentSessions, "piagent-home")] {
+            try writeJSONL([
+                ["type": "session", "id": id, "timestamp": "2026-07-29T01:00:00.000Z", "cwd": "/Users/test/Work"],
+                ["type": "message", "timestamp": "2026-07-29T01:00:02.000Z",
+                 "message": ["role": "user", "content": [["type": "text", "text": "hello"]]]],
+            ], to: URL(fileURLWithPath: root).appendingPathComponent("--Users-test-Work/\(id).jsonl"))
+        }
+        let range = iso("2026-07-29T00:00:00.000Z")!..<iso("2026-07-29T02:00:00.000Z")!
+        let ids = PiAgentInventory.list(in: range, roots: roots.piSessionRoots).map(\.id).sorted()
+        XCTAssertEqual(ids, ["piagent-home", "stock-pi"])
+    }
+
     func testPiAgentInventorySummarizesUsagePromptsAndToolTimeline() throws {
         let root = try makeTempDir()
         let file = root

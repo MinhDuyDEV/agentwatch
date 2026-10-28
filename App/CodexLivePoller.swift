@@ -237,7 +237,7 @@ final class PiAgentLivePoller {
         var nextCache = cache
         var sessions: [SessionSummary] = []
         let candidates = recentJsonlFiles(
-            roots: [PiAgentInventory.defaultRoot],
+            roots: PiAgentInventory.defaultRoots,
             skipSubagentPaths: true,
             limit: maxCandidateFiles
         )
