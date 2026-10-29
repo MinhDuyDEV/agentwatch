@@ -38,9 +38,32 @@ public enum StudioManagedPiRuntime {
     public static func agentDirectory(root: URL) -> URL { root.appendingPathComponent("agent", isDirectory: true) }
     public static func sessionDirectory(root: URL) -> URL { root.appendingPathComponent("ManagedSessions", isDirectory: true) }
 
-    /// Same digest as the bundle's `hashDir`: sorted names, regular files only,
-    /// `relative/path\0 content \0`.
+    /// Same digest as the bundle's `hashDir` (format "v2", piagent-bundle `src/manifest.mjs`): every
+    /// entry counts, with its type, execute bit and group/other write bit.
     public static func hashDirectory(_ dir: URL) throws -> String {
+        var hash = SHA256()
+        let put = { (text: String) in hash.update(data: Data(text.utf8)) }
+        put("piagent-bundle-hash-v2\0")
+        func walk(_ rel: String) throws {
+            let abs = rel.isEmpty ? dir : dir.appendingPathComponent(rel)
+            for name in try FileManager.default.contentsOfDirectory(atPath: abs.path).sorted(by: { $0.utf16.lexicographicallyPrecedes($1.utf16) }) {
+                let next = rel.isEmpty ? name : rel + "/" + name, full = dir.appendingPathComponent(next)
+                var info = stat(); guard lstat(full.path, &info) == 0 else { throw StudioConfigurationError.unsafe }
+                let bits = ((info.st_mode & 0o111) != 0 ? "x" : "-") + ((info.st_mode & 0o022) != 0 ? "w" : "-")
+                switch info.st_mode & S_IFMT {
+                case S_IFLNK: put("L\0\(next)\0\(try FileManager.default.destinationOfSymbolicLink(atPath: full.path))\0")
+                case S_IFDIR: put("D\0\(next)\0\(bits)\0"); try walk(next)
+                case S_IFREG: put("F\0\(next)\0\(bits)\0"); hash.update(data: try Data(contentsOf: full)); put("\0")
+                default: put("O\0\(next)\0")
+                }
+            }
+        }
+        try walk("")
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+    /// The first format (contents of regular files only), which bundles built before piagent-bundle#12 carry.
+    /// Accepted until those are rebuilt; the v2 digest is what a new bundle pins.
+    public static func hashDirectoryLegacy(_ dir: URL) throws -> String {
         var hash = SHA256()
         func walk(_ rel: String) throws {
             let abs = rel.isEmpty ? dir : dir.appendingPathComponent(rel)
@@ -56,6 +79,16 @@ public enum StudioManagedPiRuntime {
         try walk("")
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
+    /// Pi's own environment and flags for the company runtime. Same list as `launchPlan` in
+    /// piagent-bundle `src/launcher.mjs` (fix/security-bundle): nothing a project carries adds code
+    /// or prompts, and Pi makes no network call (catalog, version check, telemetry, fd/rg download).
+    static let piEnvironment = ["PI_OFFLINE": "1", "PI_TELEMETRY": "0", "PI_SKIP_VERSION_CHECK": "1"]
+    static let piFlags = ["--no-extensions", "--no-approve", "--no-skills", "--no-prompt-templates", "--offline"]
+    /// realpath(3), as the provider compares the broker (Foundation's resolvingSymlinksInPath drops `/private`).
+    static func realPath(_ url: URL) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        return realpath(url.path, &buffer) == nil ? nil : String(cString: buffer)
+    }
     static func hex(_ file: URL) throws -> String { SHA256.hash(data: try Data(contentsOf: file)).map { String(format: "%02x", $0) }.joined() }
 
     /// Problems of `parts` against what is on disk (empty = every part matches).
@@ -66,7 +99,7 @@ public enum StudioManagedPiRuntime {
             guard let part = pinned[name] else { out.append("missing:" + name); continue }
             let dir = bundle.appendingPathComponent(part.path)
             guard FileManager.default.fileExists(atPath: dir.path) else { out.append("absent:" + name); continue }
-            if (try? hashDirectory(dir)) != part.sha256 { out.append("hash-mismatch:" + name) }
+            if let found = try? hashDirectory(dir), found == part.sha256 {} else if let old = try? hashDirectoryLegacy(dir), old == part.sha256 {} else { out.append("hash-mismatch:" + name) }
         }
         return out
     }
@@ -93,11 +126,12 @@ public enum StudioManagedPiRuntime {
         let issues = problems(bundle: bundle, parts: pinned, piVersion: object["piVersion"] as? String ?? "")
         guard issues.isEmpty else { throw StudioPiRuntimeError.bundleMismatch(issues) }
         let launcher = try launcherBinding(bundle: bundle, pi: pinned["pi"]!.path, node: nil)
-        let broker = helper.resolvingSymlinksInPath()
+        guard let brokerPath = realPath(helper) else { throw StudioPiRuntimeError.bindingChanged }
+        let broker = URL(fileURLWithPath: brokerPath)
         var binding: [String: Any] = ["schema_version": 1, "runtime": "pi", "profile_id": connection.id, "origin": connection.origin.value,
             "pi_version": piVersion, "bundle_version": object["bundleVersion"] as? String ?? "", "bundle_root": bundle.path,
             "parts": pinned.mapValues { ["path": $0.path, "sha256": $0.sha256] },
-            "entrypoint": launcher.entrypoint.path, "entrypoint_sha256": launcher.entrypointSHA256,
+            "manifest_sha256": try hex(bundle.appendingPathComponent("manifest.json")), "entrypoint": launcher.entrypoint.path, "entrypoint_sha256": launcher.entrypointSHA256,
             "broker": broker.path, "broker_sha256": try hex(broker),
             "agent_dir": agentDirectory(root: root).path, "session_dir": sessionDirectory(root: root).path,
             "configuration_revision": manifest.revision]
@@ -128,20 +162,34 @@ public enum StudioManagedPiRuntime {
         let bundle = URL(fileURLWithPath: bundleRoot)
         guard bundle == bundleDirectory(root: root) else { throw StudioPiRuntimeError.bindingChanged }
         let pinned = pinnedParts(object)
-        let issues = problems(bundle: bundle, parts: pinned, piVersion: object["pi_version"] as? String ?? "")
+        // `doctor --expect`: the manifest itself is pinned too, so a manifest rewritten with the files it describes does not verify.
+        var issues = (try? hex(bundle.appendingPathComponent("manifest.json"))) == object["manifest_sha256"] as? String ? [] : ["manifest-digest-mismatch"]
+        issues += problems(bundle: bundle, parts: pinned, piVersion: object["pi_version"] as? String ?? "")
         guard issues.isEmpty else { throw StudioPiRuntimeError.bundleMismatch(issues) }
         guard let launcher = try? launcherBinding(bundle: bundle, pi: pinned["pi"]?.path ?? "", node: (object["node"] as? String).map { URL(fileURLWithPath: $0) }),
               launcher.entrypoint.path == entry, launcher.entrypointSHA256 == entryHash, launcher.interpreterSHA256 == object["node_sha256"] as? String,
-              broker.hasPrefix("/"), URL(fileURLWithPath: broker).resolvingSymlinksInPath().path == broker,
+              broker.hasPrefix("/"), realPath(URL(fileURLWithPath: broker)) == broker,
               (try? hex(URL(fileURLWithPath: broker))) == brokerHash else { throw StudioPiRuntimeError.bindingChanged }
         try StudioCLIProfiles.privateDirectory(root)
         try StudioCLIProfiles.privateDirectory(URL(fileURLWithPath: agent)); try StudioCLIProfiles.privateDirectory(URL(fileURLWithPath: sessions))
         let part = { (name: String) in bundle.appendingPathComponent(pinned[name]!.path).path }
         let environment = ["PATH": "/usr/bin:/bin", "TERM": "xterm-256color", "LANG": "en_US.UTF-8",
                            "PI_CODING_AGENT_DIR": agent, "PI_CODING_AGENT_SESSION_DIR": sessions,
-                           "AGENT_WATCH_MANAGED_BINDING": bindingURL(root: root).path]
-        return (launcher.executable.path, launcher.prefixArguments + ["--no-extensions", "-e", part("harness"), "-e", part("sandbox"), "-e", part("provider"), "-e", "builtin:mcp"], environment)
+                           "AGENT_WATCH_MANAGED_BINDING": bindingURL(root: root).path].merging(piEnvironment) { $1 }
+        return (launcher.executable.path, launcher.prefixArguments + piFlags + ["-e", part("harness"), "-e", part("sandbox"), "-e", part("provider"), "-e", "builtin:mcp"], environment)
     }
+
+    /// The bundle version the `pi` binding of `profileID` pins, for the broker to send with `start`.
+    /// Nil when there is no such binding (Piagent), so that path sends nothing extra.
+    public static func pinnedBundleVersion(root: URL, profileID: String) -> String? {
+        guard let data = try? StudioClientConfiguration.read(bindingURL(root: root)), let object = try? StudioClientConfiguration.object(data),
+              object["runtime"] as? String == "pi", object["profile_id"] as? String == profileID,
+              let version = object["bundle_version"] as? String, (1...64).contains(version.utf8.count),
+              version.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [0x2e, 0x2b, 0x2d].contains($0) }) else { return nil }
+        return version
+    }
+    /// Studio asks for Piagent again: the Pi binding goes, so a later broker sends no bundle version.
+    public static func retire(root: URL) { try? FileManager.default.removeItem(at: bindingURL(root: root)) }
 
     public static func terminal(root: URL, project: URL, profileID: String, launchDirectory: URL = StudioTerminalCommand.directory) throws -> StudioTerminalCommand {
         guard project.isFileURL, (try? project.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { throw StudioCLIError.invalidArguments }
