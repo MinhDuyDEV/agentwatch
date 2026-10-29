@@ -84,6 +84,16 @@ struct StudioLauncherView: View {
             let sync = StudioSyncStore.shared
             let target: StudioSyncTarget = sync.selected.contains(.piagent) ? .piagent : .pi
             guard sync.selected.contains(target) else { throw StudioCLIError.invalidArguments }
+            if sync.managedRuntime == .pi {
+                guard !web else { throw StudioCLIError.invalidArguments }
+                let root = StudioManagedPiRuntime.defaultRoot
+                message = "Đang kiểm tra quyền Pi…"
+                try await StudioManagedPiRuntime.authorize(root: root, profileID: profile.id)
+                guard studio.profile?.id == profile.id else { throw StudioError.identityChanged }
+                try await StudioTerminalOpener.open(try StudioManagedPiRuntime.terminal(root: root, project: project, profileID: profile.id))
+                message = "Đã mở Pi. Chọn thinking trong phiên."
+                return
+            }
             let directory = sync.directory(target)
             message = "Đang kiểm tra quyền Piagent…"
             try await StudioManagedConfiguration.authorize(directory: directory, profileID: profile.id)
