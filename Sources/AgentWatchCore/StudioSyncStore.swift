@@ -57,6 +57,7 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
     @ObservationIgnored private var cachedManifest: StudioManifest?
     /// Where the `runtime = pi` binding lives (tests point it at a disposable folder).
     @ObservationIgnored public var piRuntimeRoot: URL = StudioManagedPiRuntime.defaultRoot
+    @ObservationIgnored public var piBundleSearch: StudioManagedPiRuntime.BundleSearch? = .standard
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var revisions: [String: String] = [:]
     @ObservationIgnored private var activeProfile: StudioProfile?
@@ -234,7 +235,7 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
                         let usesPi = StudioManagedRuntime.from(manifest.runtime) == .pi
                         var piError: Error?
                         if usesPi {
-                            do { try StudioClientConfiguration.apply(StudioManagedPiRuntime.prepare(root: piRuntimeRoot, connection: profile, manifest: manifest, helper: helper)) }
+                            do { try StudioClientConfiguration.apply(StudioManagedPiRuntime.prepare(root: piRuntimeRoot, connection: profile, manifest: manifest, helper: helper, search: piBundleSearch)) }
                             catch { piError = error }
                         } else { StudioManagedPiRuntime.retire(root: piRuntimeRoot) }
                         do {

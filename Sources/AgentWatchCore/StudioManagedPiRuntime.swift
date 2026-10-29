@@ -13,12 +13,14 @@ public enum StudioPiRuntimeError: Error, LocalizedError, Sendable, Equatable {
     case bundleMissing, bundleMismatch([String]), bindingMissing, bindingChanged
     public var errorDescription: String? {
         switch self {
-        case .bundleMissing: "Chưa có bộ Pi của công ty. Dùng “Sửa cài đặt” để cài lại."
-        case .bundleMismatch(let problems): "Bộ Pi không khớp bản đã pin (" + problems.joined(separator: ", ") + "). Chưa mở. Dùng “Sửa cài đặt” để cài lại."
+        case .bundleMissing: "Chưa có bộ Pi của công ty. Dùng “Sửa cài đặt”, hoặc chạy trong Terminal: " + StudioManagedPiRuntime.installCommand(repair: false)
+        case .bundleMismatch(let problems): "Bộ Pi không khớp bản đã pin (" + problems.joined(separator: ", ") + "). Chưa mở. Dùng “Sửa cài đặt”, hoặc chạy trong Terminal: " + StudioManagedPiRuntime.installCommand(repair: true) + ". Nếu bạn vừa cập nhật bộ, bấm Đồng bộ để ghim lại."
         case .bindingMissing: "Chưa đồng bộ cấu hình Pi của công ty. Mở lại sau khi đồng bộ."
-        case .bindingChanged: "Broker hoặc Pi đã đổi so với lúc đồng bộ. Chưa mở. Dùng “Sửa cài đặt”."
+        case .bindingChanged: "Broker hoặc Pi đã đổi so với lúc đồng bộ. Chưa mở. Dùng “Sửa cài đặt”, hoặc chạy trong Terminal: " + StudioManagedPiRuntime.installCommand(repair: true)
         }
     }
+    /// The errors "Sửa cài đặt" can mend by running the install command.
+    public var isRepairable: Bool { if case .bindingMissing = self { return false }; return true }
 }
 
 /// `runtime = pi`: the Pi of the company bundle (its own copy, pinned by hash)
@@ -34,7 +36,45 @@ public enum StudioManagedPiRuntime {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("AgentWatch/ManagedPi", isDirectory: true)
     }
     public static func bindingURL(root: URL) -> URL { root.appendingPathComponent(bindingName) }
+    /// The first place the bundle was put (trial builds): `<root>/bundle`. Still accepted; the npm package is preferred.
     public static func bundleDirectory(root: URL) -> URL { root.appendingPathComponent("bundle", isDirectory: true) }
+
+    /// The bundle is the global npm package `@piagent/pi-bundle`, installed by the member like `@piagent/platform`.
+    /// Agent Watch does not install it: it looks under every npm prefix and pins the path and hashes it found.
+    public static let npmPackage = "@piagent/pi-bundle"
+    public static let npmSuffix = "lib/node_modules/@piagent/pi-bundle/bundle"
+    public static func installCommand(repair: Bool) -> String { "npm install --global --ignore-scripts" + (repair ? " --force " : " ") + npmPackage }
+
+    /// Where to look for the npm package. `nil` (the default of `prepare`) looks only at `<root>/bundle`.
+    public struct BundleSearch: Sendable {
+        public var home: URL, system: [URL]
+        public init(home: URL, system: [URL]) { self.home = home; self.system = system }
+        public static var standard: Self { .init(home: FileManager.default.homeDirectoryForCurrentUser, system: ["/usr/local", "/opt/homebrew"].map { URL(fileURLWithPath: $0) }) }
+        var prefixes: [URL] {
+            [home.appendingPathComponent(".local")] + system + StudioInstallLocations.userPrefixes(home: home, package: StudioManagedPiRuntime.npmPackage)
+                + StudioInstallLocations.versionManagedPrefixes(home: home)
+        }
+    }
+    /// The bundle to pin: the first npm install that verifies, else the first one found (so its problems are reported),
+    /// else the older `<root>/bundle`. Paths of npm installs are resolved with realpath(3).
+    public static func locateBundle(root: URL, search: BundleSearch?) -> URL? {
+        var found: [URL] = (search?.prefixes ?? []).compactMap { prefix in
+            let dir = prefix.appendingPathComponent(npmSuffix, isDirectory: true)
+            return FileManager.default.fileExists(atPath: dir.appendingPathComponent("manifest.json").path) ? realPath(dir).map { URL(fileURLWithPath: $0) } : nil
+        }
+        let legacy = bundleDirectory(root: root)
+        if FileManager.default.fileExists(atPath: legacy.appendingPathComponent("manifest.json").path) { found.append(legacy) }
+        return found.first(where: { verified($0) }) ?? found.first
+    }
+    static func verified(_ bundle: URL) -> Bool {
+        guard let data = try? Data(contentsOf: bundle.appendingPathComponent("manifest.json")), let object = try? StudioClientConfiguration.object(data),
+              object["schema"] as? Int == 1 else { return false }
+        return problems(bundle: bundle, parts: pinnedParts(object), piVersion: object["piVersion"] as? String ?? "").isEmpty
+    }
+    /// What the binding may name as the bundle: `<root>/bundle`, or a real path of the npm package.
+    static func acceptedLocation(_ bundle: URL, root: URL) -> Bool {
+        bundle == bundleDirectory(root: root) || (bundle.path.hasPrefix("/") && bundle.path.hasSuffix("/" + npmSuffix) && realPath(bundle) == bundle.path)
+    }
     public static func agentDirectory(root: URL) -> URL { root.appendingPathComponent("agent", isDirectory: true) }
     public static func sessionDirectory(root: URL) -> URL { root.appendingPathComponent("ManagedSessions", isDirectory: true) }
 
@@ -115,12 +155,12 @@ public enum StudioManagedPiRuntime {
 
     /// The binding to write: the bundle's own manifest, re-checked against the
     /// disk, plus the broker this app ships. Nothing is read from PATH.
-    public static func prepare(root: URL, connection: StudioProfile, manifest: StudioManifest, helper: URL) throws -> StudioConfigurationPlan {
+    public static func prepare(root: URL, connection: StudioProfile, manifest: StudioManifest, helper: URL, search: BundleSearch? = nil) throws -> StudioConfigurationPlan {
         try manifest.validate(profile: connection)
         guard connection.credentialMode == .managed, manifest.harness != nil, helper.isFileURL,
               FileManager.default.isExecutableFile(atPath: helper.path) else { throw StudioError.permissionDenied }
-        let bundle = bundleDirectory(root: root)
-        guard let data = try? Data(contentsOf: bundle.appendingPathComponent("manifest.json")),
+        guard let bundle = locateBundle(root: root, search: search),
+              let data = try? Data(contentsOf: bundle.appendingPathComponent("manifest.json")),
               let object = try? StudioClientConfiguration.object(data), object["schema"] as? Int == 1 else { throw StudioPiRuntimeError.bundleMissing }
         let pinned = pinnedParts(object)
         let issues = problems(bundle: bundle, parts: pinned, piVersion: object["piVersion"] as? String ?? "")
@@ -160,7 +200,7 @@ public enum StudioManagedPiRuntime {
               let agent = object["agent_dir"] as? String, let sessions = object["session_dir"] as? String,
               agent == agentDirectory(root: root).path, sessions == sessionDirectory(root: root).path else { throw StudioPiRuntimeError.bindingMissing }
         let bundle = URL(fileURLWithPath: bundleRoot)
-        guard bundle == bundleDirectory(root: root) else { throw StudioPiRuntimeError.bindingChanged }
+        guard acceptedLocation(bundle, root: root) else { throw StudioPiRuntimeError.bindingChanged }
         let pinned = pinnedParts(object)
         // `doctor --expect`: the manifest itself is pinned too, so a manifest rewritten with the files it describes does not verify.
         var issues = (try? hex(bundle.appendingPathComponent("manifest.json"))) == object["manifest_sha256"] as? String ? [] : ["manifest-digest-mismatch"]
@@ -190,6 +230,19 @@ public enum StudioManagedPiRuntime {
     }
     /// Studio asks for Piagent again: the Pi binding goes, so a later broker sends no bundle version.
     public static func retire(root: URL) { try? FileManager.default.removeItem(at: bindingURL(root: root)) }
+
+    /// "Sửa cài đặt": a one-use Terminal script that runs the install command in the member's own login shell
+    /// (their Node, their npm prefix), visibly. Agent Watch itself runs no npm.
+    public static func repairTerminal(repair: Bool, launchDirectory: URL = StudioTerminalCommand.directory) throws -> StudioTerminalCommand {
+        try StudioCLIProfiles.privateDirectory(launchDirectory)
+        let target = launchDirectory.appendingPathComponent(UUID().uuidString.lowercased() + ".command")
+        let quote = StudioClientConfiguration.shellQuote
+        let inner = "\(installCommand(repair: repair)); echo; echo 'Xong. Quay lại Agent Watch và bấm Đồng bộ.'; read -k 1 '?Nhấn phím bất kỳ để đóng.'"
+        let script = "#!/bin/sh\numask 077\n/bin/rm -f -- \(quote(target.path))\nexec /bin/zsh -lic \(quote(inner))\n"
+        try Data(script.utf8).write(to: target, options: [.withoutOverwriting])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: target.path)
+        return StudioTerminalCommand(url: target)
+    }
 
     public static func terminal(root: URL, project: URL, profileID: String, launchDirectory: URL = StudioTerminalCommand.directory) throws -> StudioTerminalCommand {
         guard project.isFileURL, (try? project.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { throw StudioCLIError.invalidArguments }

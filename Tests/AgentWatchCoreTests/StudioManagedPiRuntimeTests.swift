@@ -28,15 +28,15 @@ final class StudioManagedPiRuntimeTests: XCTestCase {
     }
     func helper(_ base: URL) throws -> URL { let h = base.appendingPathComponent("agentwatch"); try write("#!/bin/sh\nexit 0\n", h, executable: true); return h }
     /// A bundle as piagent-bundle lays it out: Pi plus harness/sandbox/provider and manifest.json.
-    func bundle(root: URL) throws {
-        let dir = StudioManagedPiRuntime.bundleDirectory(root: root)
+    func bundle(root: URL) throws { try bundle(at: StudioManagedPiRuntime.bundleDirectory(root: root)) }
+    func bundle(at dir: URL, version: String = "0.1.0") throws {
         try write("#!/bin/sh\nout=\"$PI_CODING_AGENT_DIR/dump\"\nenv | sort > \"$out.env\"\nprintf '%s\\n' \"$@\" > \"$out.argv\"\npwd > \"$out.pwd\"\n", dir.appendingPathComponent("pi/bin/pi"), executable: true)
         for name in ["harness", "sandbox", "provider"] { try write("export default {}\n", dir.appendingPathComponent("\(name)/index.js")) }
         var parts: [String: Any] = [:]
         for name in StudioManagedPiRuntime.parts {
             parts[name] = ["version": "1.0.0", "path": name, "sha256": try StudioManagedPiRuntime.hashDirectory(dir.appendingPathComponent(name))]
         }
-        try Data(JSONSerialization.data(withJSONObject: ["schema": 1, "bundleVersion": "0.1.0", "piVersion": "1.3.0", "parts": parts])).write(to: dir.appendingPathComponent("manifest.json"))
+        try Data(JSONSerialization.data(withJSONObject: ["schema": 1, "bundleVersion": version, "piVersion": "1.3.0", "parts": parts])).write(to: dir.appendingPathComponent("manifest.json"))
     }
     func syncedRoot() throws -> (base: URL, root: URL, profile: StudioProfile) {
         let base = try scratch(), root = base.appendingPathComponent("ManagedPi")
@@ -130,6 +130,99 @@ umask 077
 exec /usr/bin/env -i PATH=/usr/bin:/bin TERM=xterm-256color LANG=en_US.UTF-8 '<NODE>' '<BASE>/platform/scripts/piagent-studio.mjs' '--config' '<BASE>/agent/agent-watch-managed.json' '--project' '<BASE>'
 
 """#
+
+    // The bundle is the global npm package @piagent/pi-bundle, found under any npm prefix.
+    func npmBundle(_ prefix: URL, version: String = "0.1.1") throws -> URL {
+        let dir = prefix.appendingPathComponent(StudioManagedPiRuntime.npmSuffix, isDirectory: true)
+        try bundle(at: dir, version: version); return dir
+    }
+    func search(_ home: URL, system: [URL] = []) -> StudioManagedPiRuntime.BundleSearch { .init(home: home, system: system) }
+    func realURL(_ url: URL) -> URL { URL(fileURLWithPath: StudioManagedPiRuntime.realPath(url)!) }
+
+    func testBundleIsFoundUnderEveryNpmPrefixKind() throws {
+        let prefixes: [(String, (URL) -> URL)] = [
+            ("nvm", { $0.appendingPathComponent(".nvm/versions/node/v22.19.0") }),
+            ("npm-global", { $0.appendingPathComponent(".npm-global") }),
+            ("volta", { $0.appendingPathComponent(".volta/tools/image/packages/@piagent/pi-bundle") }),
+            ("fnm", { $0.appendingPathComponent(".local/share/fnm/node-versions/v24.1.0/installation") }),
+            ("local", { $0.appendingPathComponent(".local") }),
+        ]
+        for (name, prefix) in prefixes {
+            let home = try scratch()
+            let dir = try npmBundle(prefix(home))
+            let found = StudioManagedPiRuntime.locateBundle(root: home.appendingPathComponent("ManagedPi"), search: search(home))
+            XCTAssertEqual(found?.path, realURL(dir).path, name)
+        }
+        let system = try scratch(), home = try scratch()
+        let dir = try npmBundle(system)
+        XCTAssertEqual(StudioManagedPiRuntime.locateBundle(root: home, search: search(home, system: [system]))?.path, realURL(dir).path, "system prefix")
+    }
+
+    func testNpmBundleIsPinnedAndOpensFromItsPrefixAndLegacyStaysCompatible() throws {
+        let base = try scratch(), home = base.appendingPathComponent("home"), root = base.appendingPathComponent("ManagedPi")
+        let dir = try npmBundle(home.appendingPathComponent(".nvm/versions/node/v22.19.0"))
+        let (profile, manifest) = try configuration(runtime: "pi")
+        try StudioClientConfiguration.apply(StudioManagedPiRuntime.prepare(root: root, connection: profile, manifest: manifest, helper: helper(base), search: search(home)))
+        let binding = try StudioClientConfiguration.object(StudioClientConfiguration.read(StudioManagedPiRuntime.bindingURL(root: root)))
+        XCTAssertEqual(binding["bundle_root"] as? String, realURL(dir).path)
+        XCTAssertEqual(binding["bundle_version"] as? String, "0.1.1")
+        let plan = try StudioManagedPiRuntime.launch(root: root, profileID: profile.id)
+        XCTAssertEqual(plan.executable, realURL(dir).appendingPathComponent("pi/bin/pi").path)
+        XCTAssertEqual(plan.environment["PI_CODING_AGENT_DIR"], root.path + "/agent", "own directories, not the package's")
+        // Nothing of the trial location is needed any more, and a bundle at <root>/bundle alone still works (the first trial build).
+        let legacyBase = try scratch(), legacyRoot = legacyBase.appendingPathComponent("ManagedPi")
+        try bundle(root: legacyRoot)
+        XCTAssertEqual(StudioManagedPiRuntime.locateBundle(root: legacyRoot, search: search(try scratch()))?.path, StudioManagedPiRuntime.bundleDirectory(root: legacyRoot).path)
+        try StudioClientConfiguration.apply(StudioManagedPiRuntime.prepare(root: legacyRoot, connection: profile, manifest: manifest, helper: helper(legacyBase), search: search(try scratch())))
+        XCTAssertNoThrow(try StudioManagedPiRuntime.launch(root: legacyRoot, profileID: profile.id))
+    }
+
+    func testAVerifyingNpmInstallBeatsACorruptOneAndTheOlderLocation() throws {
+        let base = try scratch(), home = base.appendingPathComponent("home"), root = base.appendingPathComponent("ManagedPi")
+        let bad = try npmBundle(home.appendingPathComponent(".local"))
+        try write("tampered", bad.appendingPathComponent("harness/index.js"))
+        let good = try npmBundle(home.appendingPathComponent(".nvm/versions/node/v22.19.0"))
+        try bundle(root: root)
+        XCTAssertEqual(StudioManagedPiRuntime.locateBundle(root: root, search: search(home))?.path, realURL(good).path)
+        // Only a corrupt one: it is still the one reported, so the error names its problem and the repair command.
+        try FileManager.default.removeItem(at: good)
+        try FileManager.default.removeItem(at: StudioManagedPiRuntime.bundleDirectory(root: root))
+        let (profile, manifest) = try configuration(runtime: "pi")
+        XCTAssertThrowsError(try StudioManagedPiRuntime.prepare(root: root, connection: profile, manifest: manifest, helper: helper(base), search: search(home))) {
+            guard case StudioPiRuntimeError.bundleMismatch(let issues) = $0 else { return XCTFail("\($0)") }
+            XCTAssertEqual(issues, ["hash-mismatch:harness"])
+        }
+    }
+
+    func testMissingBundleNamesTheInstallCommandAndRepairTerminalRunsIt() throws {
+        let base = try scratch(), (profile, manifest) = try configuration(runtime: "pi")
+        XCTAssertThrowsError(try StudioManagedPiRuntime.prepare(root: base.appendingPathComponent("ManagedPi"), connection: profile, manifest: manifest, helper: helper(base), search: search(base))) {
+            XCTAssertEqual($0 as? StudioPiRuntimeError, .bundleMissing)
+            XCTAssertTrue($0.localizedDescription.contains("npm install --global --ignore-scripts @piagent/pi-bundle"), $0.localizedDescription)
+            XCTAssertTrue($0.localizedDescription.contains("Sửa cài đặt"))
+        }
+        XCTAssertTrue(StudioPiRuntimeError.bundleMismatch(["hash-mismatch:pi"]).localizedDescription.contains("--force @piagent/pi-bundle"))
+        XCTAssertFalse(StudioPiRuntimeError.bindingMissing.isRepairable)
+        let launchDirectory = base.appendingPathComponent("launch")
+        let command = try StudioManagedPiRuntime.repairTerminal(repair: false, launchDirectory: launchDirectory)
+        let script = try String(contentsOf: command.url, encoding: .utf8)
+        XCTAssertTrue(script.contains("exec /bin/zsh -lic"), script)
+        XCTAssertTrue(script.contains("npm install --global --ignore-scripts @piagent/pi-bundle"), script)
+        XCTAssertFalse(script.contains("--force"))
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: command.url.path)[.posixPermissions] as? Int, 0o700)
+        let again = try String(contentsOf: StudioManagedPiRuntime.repairTerminal(repair: true, launchDirectory: launchDirectory).url, encoding: .utf8)
+        XCTAssertTrue(again.contains("--force @piagent/pi-bundle"), again)
+    }
+
+    func testBindingCannotNameAnArbitraryBundleLocation() throws {
+        let (base, root, profile) = try syncedRoot()
+        let file = StudioManagedPiRuntime.bindingURL(root: root)
+        var object = try StudioClientConfiguration.object(StudioClientConfiguration.read(file))
+        let elsewhere = base.appendingPathComponent("elsewhere/bundle"); try bundle(at: elsewhere)
+        object["bundle_root"] = elsewhere.path
+        try Data(JSONSerialization.data(withJSONObject: object)).write(to: file)
+        XCTAssertThrowsError(try StudioManagedPiRuntime.launch(root: root, profileID: profile.id)) { XCTAssertEqual($0 as? StudioPiRuntimeError, .bindingChanged) }
+    }
 
     func testPiPathUsesTheBundlesOwnPiAndSeparateDirectories() throws {
         let (base, root, profile) = try syncedRoot()
