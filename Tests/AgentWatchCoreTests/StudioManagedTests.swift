@@ -381,6 +381,25 @@ private actor ManagedTransport: StudioHTTPTransport {
         try Data("#!/usr/bin/env node\nchanged\n".utf8).write(to: entry)
         XCTAssertThrowsError(try StudioManagedConfiguration.terminal(directory: dir, project: base, profileID: profile.id, launchDirectory: base.appendingPathComponent("launches")))
     }
+    func testPiBindingCarriesOnlyWhatTheBrokerNeedsAndLeavesPiFilesAlone() throws {
+        let (_, _, _, _, helper, dir) = try managedRuntime()
+        let settings = Data(#"{"packages":["x"]}"#.utf8), models = Data(#"{"providers":{"personal":{}}}"#.utf8)
+        try settings.write(to: dir.appendingPathComponent("settings.json")); try models.write(to: dir.appendingPathComponent("models.json"))
+        let (profile, manifest) = try configuration()
+        let plan = try StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: profile, manifest: manifest, helper: helper)
+        XCTAssertEqual(plan.edits.map(\.file.lastPathComponent), ["agent-watch-studio.json"])
+        let object = try StudioClientConfiguration.object(plan.edits[0].after)
+        XCTAssertEqual(Set(object.keys), ["schema_version", "profile_id", "origin", "broker", "broker_sha256", "configuration_revision"])
+        XCTAssertEqual(object["profile_id"] as? String, profile.id)
+        XCTAssertEqual(object["broker"] as? String, helper.resolvingSymlinksInPath().path)
+        let receipt = dir.appendingPathComponent("receipt.json")
+        try StudioClientConfiguration.apply(plan, receipt: receipt)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("settings.json")), settings)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("models.json")), models)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("agent-watch-managed.json").path))
+        let direct = try StudioProfile(origin: profile.origin, id: String(repeating: "a", count: 64))
+        XCTAssertThrowsError(try StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: direct, manifest: manifest, helper: helper))
+    }
     /// The Pi host the installed Piagent pins is the one the import accepts:
     /// 1.3.0 for Piagent 1.33+, 0.87.1 before (no pin read); never a host the
     /// Piagent does not pin, nor one Agent Watch was not checked against.

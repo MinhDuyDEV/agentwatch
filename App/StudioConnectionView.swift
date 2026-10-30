@@ -146,7 +146,7 @@ struct StudioConnectionView: View {
     }
 
     private func profileTitle(_ profile: StudioProfile) -> String {
-        let kind = profile.credentialMode == .managed ? "Piagent công ty" : "CLI trực tiếp"
+        let kind = profile.credentialMode == .managed ? "Key công ty" : "CLI trực tiếp"
         return kind + " · " + (profile.keyID.map { String($0.uuidString.lowercased().prefix(8)) } ?? "key hiện có")
     }
 
@@ -260,7 +260,7 @@ struct StudioConnectForm: View {
                     await studio.connect(origin: submittedOrigin, key: submittedKey)
                     if studio.state == .connected {
                         sync.activateProfile()
-                        sync.selected = studio.profile?.credentialMode == .managed ? submittedTargets.intersection([.pi, .piagent]) : submittedTargets
+                        sync.selected = studio.profile?.credentialMode == .managed ? submittedTargets.intersection(StudioSyncTarget.managedTargets) : submittedTargets
                         sync.directories = submittedDirectories
                         sync.enabled = true
                         StudioBackgroundService.shared.start()

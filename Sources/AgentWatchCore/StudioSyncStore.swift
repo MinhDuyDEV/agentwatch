@@ -6,6 +6,9 @@ public enum StudioSyncTarget: String, CaseIterable, Codable, Sendable, Identifia
     public var id: String { rawValue }
     public var title: String { switch self { case .claude: "Claude Code"; case .codex: "Codex CLI"; case .pi: "Pi"; case .piagent: "Piagent" } }
     public var tool: StudioConfiguredTool { switch self { case .claude: .claude; case .codex: .codex; case .pi, .piagent: .pi } }
+    /// What a company (managed) key can configure: Piagent's launcher binding or
+    /// the Pi binding (`StudioManagedConfiguration.prepareStudioBinding`).
+    public static let managedTargets: Set<StudioSyncTarget> = [.pi, .piagent]
     public var defaultDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(tool == .pi ? ".pi/agent" : "." + rawValue)
     }
@@ -113,7 +116,7 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
             enabled = defaults.bool(forKey: "studio.sync.enabled")
             keyInfo = defaults.data(forKey: "studio.sync.keyInfo").flatMap { try? JSONDecoder().decode(StudioKeyInfo.self, from: $0) }
         }
-        if next.credentialMode == .managed { selected.formIntersection([.piagent]) }
+        if next.credentialMode == .managed { selected.formIntersection(StudioSyncTarget.managedTargets) }
         persistPreferences()
         status = selected.isEmpty ? "Chọn công cụ cho key này." : "Cấu hình chưa được kiểm tra cho key này."
     }
@@ -188,11 +191,11 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
     }
     public func synchronize(helper: URL? = Bundle.main.executableURL, force: Bool = false) async {
         activateProfile()
-        // A company (managed) key only configures Piagent. A tool ticked before
-        // the key mode was known must not block Piagent through the shared Pi folder.
-        if activeProfile?.credentialMode == .managed, !selected.isSubset(of: [.piagent]) {
-            loadingPreferences = true; selected.formIntersection([.piagent]); loadingPreferences = false
-            persistPreferences(); results.removeAll { $0.target != .piagent }
+        // A company (managed) key only configures Pi and Piagent. A tool ticked before
+        // the key mode was known must not block them through the shared Pi folder.
+        if activeProfile?.credentialMode == .managed, !selected.isSubset(of: StudioSyncTarget.managedTargets) {
+            loadingPreferences = true; selected.formIntersection(StudioSyncTarget.managedTargets); loadingPreferences = false
+            persistPreferences(); results.removeAll { !StudioSyncTarget.managedTargets.contains($0.target) }
         }
         guard !busy, !selected.isEmpty else { return }
         busy = true; defer { busy = false }
@@ -215,13 +218,23 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
             let saved = try? settings.savedProfileIDs()
             for target in StudioSyncTarget.allCases where targets.contains(target) {
                 guard generation == attempt else { return }
-                let dir = directory(target), physical = target.tool.rawValue + "\0" + dir.standardizedFileURL.path
+                // A company key writes a different file per target, so Pi and Piagent in one folder do not share a result.
+                let dir = directory(target), physical = (profile.credentialMode == .managed ? target.rawValue : target.tool.rawValue) + "\0" + dir.standardizedFileURL.path
                 if let result = completed[physical] {
                     next.append(StudioSyncResult(target: target, count: result.count, message: "Dùng chung cấu hình với Pi/Piagent. " + result.message, success: result.success)); continue
                 }
                 let count = manifest.models.filter { profile.credentialMode == .managed || !StudioVendor.valid($0.ownedBy) && (target.tool == .pi || $0.ownedBy == target.tool.rawValue) }.count
                 do {
                     if profile.credentialMode == .managed {
+                        if target == .pi {
+                            let receipt = StudioManagedConfiguration.studioReceiptURL(directory: dir)
+                            if let saved { try StudioClientConfiguration.adoptOrphanedReceipt(receipt, owner: profile.id, savedProfiles: saved) }
+                            let plan = try StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: profile, manifest: manifest, helper: helper)
+                            try StudioClientConfiguration.apply(plan, receipt: receipt)
+                            revisions[physical] = manifest.revision
+                            let result = StudioSyncResult(target: target, count: 1, message: "agent-watch-studio.json · đã ghi binding Harness.", success: true)
+                            next.append(result); completed[physical] = result; continue
+                        }
                         guard target == .piagent else { throw StudioError.permissionDenied }
                         if let saved { try StudioClientConfiguration.adoptOrphanedReceipt(StudioManagedConfiguration.receiptURL(directory: dir), owner: profile.id, savedProfiles: saved) }
                         let plan = try StudioManagedConfiguration.prepare(directory: dir, connection: profile, manifest: manifest, helper: helper)
@@ -330,9 +343,9 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
         do {
             guard let profile = activeProfile else { throw StudioError.invalidKey }
             // A company key's Piagent import has its own receipt beside Pi's.
-            let receipt = profile.credentialMode == .managed && target == .piagent
-                ? StudioManagedConfiguration.receiptURL(directory: directory(target))
-                : StudioClientConfiguration.receiptURL(tool: target.tool, directory: directory(target))
+            let receipt = profile.credentialMode != .managed ? StudioClientConfiguration.receiptURL(tool: target.tool, directory: directory(target))
+                : target == .pi ? StudioManagedConfiguration.studioReceiptURL(directory: directory(target))
+                : StudioManagedConfiguration.receiptURL(directory: directory(target))
             try StudioClientConfiguration.rebaseCodexSelfEdits(receipt)
             if let saved = try? settings.savedProfileIDs() {
                 try StudioClientConfiguration.adoptOrphanedReceipt(receipt, owner: profile.id, savedProfiles: saved)
@@ -340,7 +353,7 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
             try StudioClientConfiguration.validateBinding(connection: profile, receipt: receipt)
             try StudioClientConfiguration.restoreReceipt(at: receipt)
             selected.remove(target)
-            if target == .pi || target == .piagent {
+            if profile.credentialMode != .managed, target == .pi || target == .piagent {
                 let other: StudioSyncTarget = target == .pi ? .piagent : .pi
                 if directory(other) == directory(target) { selected.remove(other) }
             }

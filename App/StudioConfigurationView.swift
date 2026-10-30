@@ -160,7 +160,7 @@ struct StudioConfigurationView: View {
     }
 
     private func row(_ target: StudioSyncTarget) -> some View {
-        let supported = studio.profile?.credentialMode != .managed || target == .piagent
+        let supported = studio.profile?.credentialMode != .managed || StudioSyncTarget.managedTargets.contains(target)
         let selected = supported && sync.selected.contains(target)
         let result = sync.results.first { $0.target == target }
         let (text, tone) = state(target, selected: selected, result: result)
