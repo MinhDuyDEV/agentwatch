@@ -400,6 +400,28 @@ private actor ManagedTransport: StudioHTTPTransport {
         let direct = try StudioProfile(origin: profile.origin, id: String(repeating: "a", count: 64))
         XCTAssertThrowsError(try StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: direct, manifest: manifest, helper: helper))
     }
+    func testCompanyKeySyncsPiAndPiagentInOneFolderEachOnItsOwn() async throws {
+        @MainActor final class Key: StudioKeyStorage {
+            func load(profileID: String) -> String? { "fixture-key" }
+            func save(_ key: String, profileID: String) {}
+            func delete(profileID: String) {}
+        }
+        let (_, _, _, _, helper, dir) = try managedRuntime()
+        let (profile, manifest) = try configuration()
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(manifest)) as? [String: Any])
+        let suite = "studio-managed-both-" + UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
+        let receipts = [StudioManagedConfiguration.receiptURL(directory: dir), StudioManagedConfiguration.studioReceiptURL(directory: dir)]
+        defer { defaults.removePersistentDomain(forName: suite); receipts.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let settings = StudioPreferences(defaults: defaults); settings.save(profile)
+        let store = StudioSyncStore(defaults: defaults, client: StudioClient(transport: ManagedTransport([(200, object)])), settings: settings, keys: Key())
+        store.activateProfile(); store.directories = ["pi": dir.path, "piagent": dir.path]; store.selected = [.pi, .piagent]
+        await store.synchronize(helper: helper, force: true)
+        XCTAssertEqual(store.results.first { $0.target == .pi }?.success, true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("agent-watch-studio.json").path))
+        let piagent = try XCTUnwrap(store.results.first { $0.target == .piagent })
+        XCTAssertFalse(piagent.message.hasPrefix("Dùng chung"), "Piagent is synced on its own, not skipped as the twin of Pi in the same folder")
+    }
     /// The Pi host the installed Piagent pins is the one the import accepts:
     /// 1.3.0 for Piagent 1.33+, 0.87.1 before (no pin read); never a host the
     /// Piagent does not pin, nor one Agent Watch was not checked against.

@@ -47,9 +47,11 @@ A company key never leaves Agent Watch, so Pi gets a pointer to the broker, not 
 | `origin` | the Studio origin the profile was connected to |
 | `broker` | absolute, symlink-resolved path of the Agent Watch helper |
 | `broker_sha256` | hex SHA-256 of that file; the consumer checks it before it spawns the broker |
-| `configuration_revision` | Studio client-config revision when the file was written; the broker's `config` answer carries the current one |
+| `configuration_revision` | Studio client-config revision when the file was written. Informational: it can lag the live one until the next sync, so never compare it with the revision in the broker's `config` answer |
 
 A consumer runs `<broker> managed-broker --profile <profile_id>` and talks line-delimited JSON on stdio: `config`, then `start` (`operation_id`, `effort`, `task_class`) for a run grant, and sends inference to `origin` with the grant's `as_run_` token. `child`, `renew`, `recover` and `close` follow the same protocol as for Piagent. The file holds no key, device token or model; Piagent's `agent-watch-managed.json` is a separate file and is unchanged. Agent Watch rewrites the file on the usual sync (an app update changes `broker_sha256`), so a consumer that finds a hash mismatch waits for Agent Watch instead of spawning.
+
+The broker reads the key without any prompt. After an Agent Watch update macOS may have to approve the Keychain item again, and `config` then answers `permission_denied`, the same as for an unknown profile. When `config` is refused, run `<broker> managed-authorize --profile <profile_id>` in the foreground (exit 0: allowed, 67: not a saved company key, 77: the Keychain did not release the key) and retry once.
 
 API compatibility alone does not mean every coding-client feature works. Version-test streaming, tools, cancellation, reasoning, images and compaction independently. Do not route a Claude session to a Codex model merely because a converter exists. Pi can expose both families explicitly.
 
