@@ -84,6 +84,23 @@ public enum StudioManagedConfiguration {
             "configuration_revision": manifest.revision]
         return StudioConfigurationPlan(edits: [.init(file: file, before: try StudioClientConfiguration.read(file), after: try StudioClientConfiguration.encoded(object))], tool: .pi, profileID: connection.id)
     }
+    /// The Pi binding for a company key: what a Pi extension needs to reach the
+    /// managed broker (`<broker> managed-broker --profile <profile_id>`, stdio JSON).
+    /// No key, no Piagent launcher fields, nothing in Pi's own settings or models.
+    public static func prepareStudioBinding(directory: URL, connection: StudioProfile, manifest: StudioManifest, helper: URL) throws -> StudioConfigurationPlan {
+        try manifest.validate(profile: connection)
+        guard connection.credentialMode == .managed, manifest.harness != nil else { throw StudioError.permissionDenied }
+        guard helper.isFileURL, FileManager.default.isExecutableFile(atPath: helper.path) else { throw StudioCLIError.unsupportedVersion }
+        let broker = helper.resolvingSymlinksInPath()
+        let brokerHash = SHA256.hash(data: try Data(contentsOf: broker)).map { String(format: "%02x", $0) }.joined()
+        let file = directory.appendingPathComponent("agent-watch-studio.json")
+        let object: [String: Any] = ["schema_version": 1, "profile_id": connection.id, "origin": connection.origin.value,
+            "broker": broker.path, "broker_sha256": brokerHash, "configuration_revision": manifest.revision]
+        return StudioConfigurationPlan(edits: [.init(file: file, before: try StudioClientConfiguration.read(file), after: try StudioClientConfiguration.encoded(object))], tool: .pi, profileID: connection.id)
+    }
+    public static func studioReceiptURL(directory: URL) -> URL {
+        StudioClientConfiguration.receiptURL(tool: .pi, directory: directory.appendingPathComponent(".agent-watch-studio"))
+    }
     public static func terminal(directory: URL, project: URL, profileID: String, web: Bool = false, launchDirectory: URL = StudioTerminalCommand.directory) throws -> StudioTerminalCommand {
         let file = directory.appendingPathComponent("agent-watch-managed.json")
         let object = try StudioClientConfiguration.object(StudioClientConfiguration.read(file))
@@ -117,7 +134,16 @@ public enum StudioManagedConfiguration {
         if binding.interpreterSHA256 != nodeHash || binding.entrypointSHA256 != entryHash {
             return (binding.interpreterSHA256 ?? "") + ":" + binding.entrypointSHA256
         }
-        // An Agent Watch update replaces the broker (this app) the binding pins.
+        return brokerFingerprint(object, file: file)
+    }
+    /// The same for the Pi binding of a company key: it pins only the broker.
+    public static func studioBindingStaleFingerprint(directory: URL) -> String? {
+        let file = directory.appendingPathComponent("agent-watch-studio.json")
+        guard let data = try? StudioClientConfiguration.read(file), let object = try? StudioClientConfiguration.object(data) else { return nil }
+        return brokerFingerprint(object, file: file)
+    }
+    private static func brokerFingerprint(_ object: [String: Any], file: URL) -> String? {
+        // An Agent Watch update replaces the broker (this app) a binding pins.
         // Hash it only when it is newer than the binding: a cheap check every few seconds.
         guard let broker = object["broker"] as? String, let brokerHash = object["broker_sha256"] as? String else { return "unreadable" }
         // ctime: when the app was moved into place (Sparkle keeps the build's mtime).

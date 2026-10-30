@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import AgentWatchCore
 
 private actor ManagedTransport: StudioHTTPTransport {
@@ -380,6 +381,65 @@ private actor ManagedTransport: StudioHTTPTransport {
         XCTAssertThrowsError(try StudioManagedConfiguration.terminal(directory: dir, project: base, profileID: String(repeating: "f", count: 64), launchDirectory: base.appendingPathComponent("launches")))
         try Data("#!/usr/bin/env node\nchanged\n".utf8).write(to: entry)
         XCTAssertThrowsError(try StudioManagedConfiguration.terminal(directory: dir, project: base, profileID: profile.id, launchDirectory: base.appendingPathComponent("launches")))
+    }
+    func testPiBindingCarriesOnlyWhatTheBrokerNeedsAndLeavesPiFilesAlone() throws {
+        let (_, _, _, _, helper, dir) = try managedRuntime()
+        let settings = Data(#"{"packages":["x"]}"#.utf8), models = Data(#"{"providers":{"personal":{}}}"#.utf8)
+        try settings.write(to: dir.appendingPathComponent("settings.json")); try models.write(to: dir.appendingPathComponent("models.json"))
+        let (profile, manifest) = try configuration()
+        let plan = try StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: profile, manifest: manifest, helper: helper)
+        XCTAssertEqual(plan.edits.map(\.file.lastPathComponent), ["agent-watch-studio.json"])
+        let object = try StudioClientConfiguration.object(plan.edits[0].after)
+        XCTAssertEqual(Set(object.keys), ["schema_version", "profile_id", "origin", "broker", "broker_sha256", "configuration_revision"])
+        XCTAssertEqual(object["profile_id"] as? String, profile.id)
+        XCTAssertEqual(object["broker"] as? String, helper.resolvingSymlinksInPath().path)
+        let receipt = dir.appendingPathComponent("receipt.json")
+        try StudioClientConfiguration.apply(plan, receipt: receipt)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("settings.json")), settings)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("models.json")), models)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("agent-watch-managed.json").path))
+        let direct = try StudioProfile(origin: profile.origin, id: String(repeating: "a", count: 64))
+        XCTAssertThrowsError(try StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: direct, manifest: manifest, helper: helper))
+    }
+    /// An app update replaces the broker the Pi binding pins: the binding is
+    /// stale at once (the five-second watch resyncs), and the rewrite pins the new hash.
+    func testPiBindingGoesStaleWhenAnAppUpdateReplacesTheBroker() throws {
+        let (_, _, _, _, helper, dir) = try managedRuntime()
+        XCTAssertNil(StudioManagedConfiguration.studioBindingStaleFingerprint(directory: dir), "no binding, nothing to resync")
+        let (profile, manifest) = try configuration()
+        let receipt = StudioManagedConfiguration.studioReceiptURL(directory: dir)
+        addTeardownBlock { try? FileManager.default.removeItem(at: receipt) }
+        try StudioClientConfiguration.apply(StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: profile, manifest: manifest, helper: helper), receipt: receipt)
+        XCTAssertNil(StudioManagedConfiguration.studioBindingStaleFingerprint(directory: dir))
+        Thread.sleep(forTimeInterval: 1.1)
+        try Data("#!/bin/sh\necho next-watch\n".utf8).write(to: helper)
+        XCTAssertNotNil(StudioManagedConfiguration.studioBindingStaleFingerprint(directory: dir), "a replaced broker makes the Pi binding stale")
+        try StudioClientConfiguration.apply(StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: profile, manifest: manifest, helper: helper), receipt: receipt)
+        XCTAssertNil(StudioManagedConfiguration.studioBindingStaleFingerprint(directory: dir))
+        let written = try StudioClientConfiguration.object(StudioClientConfiguration.read(dir.appendingPathComponent("agent-watch-studio.json")))
+        XCTAssertEqual(written["broker_sha256"] as? String, SHA256.hash(data: try Data(contentsOf: helper)).map { String(format: "%02x", $0) }.joined())
+    }
+    func testCompanyKeySyncsPiAndPiagentInOneFolderEachOnItsOwn() async throws {
+        @MainActor final class Key: StudioKeyStorage {
+            func load(profileID: String) -> String? { "fixture-key" }
+            func save(_ key: String, profileID: String) {}
+            func delete(profileID: String) {}
+        }
+        let (_, _, _, _, helper, dir) = try managedRuntime()
+        let (profile, manifest) = try configuration()
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(manifest)) as? [String: Any])
+        let suite = "studio-managed-both-" + UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
+        let receipts = [StudioManagedConfiguration.receiptURL(directory: dir), StudioManagedConfiguration.studioReceiptURL(directory: dir)]
+        defer { defaults.removePersistentDomain(forName: suite); receipts.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let settings = StudioPreferences(defaults: defaults); settings.save(profile)
+        let store = StudioSyncStore(defaults: defaults, client: StudioClient(transport: ManagedTransport([(200, object)])), settings: settings, keys: Key())
+        store.activateProfile(); store.directories = ["pi": dir.path, "piagent": dir.path]; store.selected = [.pi, .piagent]
+        await store.synchronize(helper: helper, force: true)
+        XCTAssertEqual(store.results.first { $0.target == .pi }?.success, true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("agent-watch-studio.json").path))
+        let piagent = try XCTUnwrap(store.results.first { $0.target == .piagent })
+        XCTAssertFalse(piagent.message.hasPrefix("Dùng chung"), "Piagent is synced on its own, not skipped as the twin of Pi in the same folder")
     }
     /// The Pi host the installed Piagent pins is the one the import accepts:
     /// 1.3.0 for Piagent 1.33+, 0.87.1 before (no pin read); never a host the

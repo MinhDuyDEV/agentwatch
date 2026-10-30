@@ -54,7 +54,7 @@ struct StudioToolsTab: View {
             if studio.profile?.credentialMode == .managed {
                 SectionLabel(text: "Harness công ty")
                 Text("agent-watch-auto").font(ClaudeFont.body(13))
-                Text("Main agent và các subagent (khảo sát, nghiên cứu, xác minh, kiểm tra) mà Harness của team bật. Thinking chọn trong Piagent.")
+                Text("Main agent và các subagent (khảo sát, nghiên cứu, xác minh, kiểm tra) mà Harness của team bật. Thinking chọn trong Pi hoặc Piagent.")
                     .font(ClaudeFont.body(11.5)).foregroundStyle(Claude.textMuted)
             } else { switch studio.snapshot?.models {
             case .available(let list):
@@ -160,7 +160,7 @@ struct StudioConfigurationView: View {
     }
 
     private func row(_ target: StudioSyncTarget) -> some View {
-        let supported = studio.profile?.credentialMode != .managed || target == .piagent
+        let supported = studio.profile?.credentialMode != .managed || StudioSyncTarget.managedTargets.contains(target)
         let selected = supported && sync.selected.contains(target)
         let result = sync.results.first { $0.target == target }
         let (text, tone) = state(target, selected: selected, result: result)

@@ -76,7 +76,7 @@ import AgentWatchCore
         alert.alertStyle = .warning
         alert.messageText = "Agent Watch cần quyền đọc key công ty"
         alert.informativeText = "macOS cần bạn cho phép Agent Watch đọc key Studio trong Keychain (thường sau khi Agent Watch cập nhật). "
-            + "Trong lúc chờ, chế độ công ty của Piagent (Terminal và dashboard) chưa mở được.\n\n"
+            + "Trong lúc chờ, chế độ công ty của Piagent (Terminal và dashboard) và binding Pi chưa dùng được.\n\n"
             + "Bấm “Cho phép ngay”, rồi chọn “Luôn cho phép” trong hộp thoại của macOS."
         alert.addButton(withTitle: "Cho phép ngay")
         alert.addButton(withTitle: "Để sau")
@@ -84,7 +84,7 @@ import AgentWatchCore
         if await sync.authorizeKeychain() {
             let done = NSAlert()
             done.messageText = "Đã cho phép"
-            done.informativeText = "Agent Watch đã cập nhật cấu hình cho Piagent. Mở lại Piagent nếu nó đang báo lỗi công ty."
+            done.informativeText = "Agent Watch đã cập nhật cấu hình cho Piagent và Pi. Mở lại Piagent hoặc Pi nếu nó đang báo lỗi công ty."
             done.runModal()
         } else {
             keychainAskAfter = Date().addingTimeInterval(300)

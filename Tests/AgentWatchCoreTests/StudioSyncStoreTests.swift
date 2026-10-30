@@ -135,7 +135,7 @@ final class StudioSyncStoreTests: XCTestCase {
         store.selected = [.pi, .piagent];
         settings.save(first); store.activateProfile()
         settings.save(second); store.activateProfile()
-        XCTAssertEqual(store.selected, [.piagent], "Managed keys never import into plain Pi")
+        XCTAssertEqual(store.selected, [.pi, .piagent], "A company key can configure Pi and Piagent, nothing else")
         store.selected = [.piagent]; store.directories = ["piagent": root.appendingPathComponent("managed").path]
         await transport.release(); await pending.value
         XCTAssertTrue(store.results.isEmpty); XCTAssertNil(store.lastError)
@@ -154,10 +154,10 @@ final class StudioSyncStoreTests: XCTestCase {
         settings.save(managed)
         let store = StudioSyncStore(defaults: defaults, client: StudioClient(transport: SyncTransport()), settings: settings, keys: SyncKeys())
         store.activateProfile()
-        store.selected = [.pi, .piagent]
+        store.selected = [.claude, .codex, .pi, .piagent]
         await store.synchronize()
-        XCTAssertEqual(store.selected, [.piagent], "Plain Pi shares the Piagent folder and must not block the company import")
-        XCTAssertFalse(store.results.contains { $0.target == .pi })
+        XCTAssertEqual(store.selected, [.pi, .piagent], "Direct-key tools ticked before the mode was known are dropped")
+        XCTAssertFalse(store.results.contains { $0.target == .claude || $0.target == .codex })
     }
 
     @MainActor func testReconnectedCompanyKeyCanRestoreTheDisconnectedKeysPiagentImport() async throws {
@@ -180,6 +180,24 @@ final class StudioSyncStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: binding.path), "Restore returns the folder to its state before Agent Watch")
         XCTAssertFalse(FileManager.default.fileExists(atPath: receipt.path))
         XCTAssertTrue(store.selected.isEmpty)
+    }
+    @MainActor func testRestoringThePiBindingLeavesThePiagentImportSelected() async throws {
+        let suite = "studio-sync-pi-binding-" + UUID().uuidString, defaults = UserDefaults(suiteName: suite)!
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/watch-pi-binding-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let receipt = StudioManagedConfiguration.studioReceiptURL(directory: root)
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: receipt) }
+        let settings = StudioPreferences(defaults: defaults), first = try XCTUnwrap(SyncSettings().profile)
+        let managed = try StudioProfile(origin: first.origin, id: String(repeating: "d", count: 64), connectionID: first.id, keyID: UUID(), credentialMode: .managed)
+        let binding = root.appendingPathComponent("agent-watch-studio.json")
+        let edit = StudioConfigurationEdit(file: binding, before: nil, after: Data(#"{"profile_id":"x"}"#.utf8))
+        try StudioClientConfiguration.apply(StudioConfigurationPlan(edits: [edit], tool: .pi, profileID: managed.id), receipt: receipt)
+        settings.save(managed)
+        let store = StudioSyncStore(defaults: defaults, client: StudioClient(transport: SyncTransport()), settings: settings, keys: SyncKeys())
+        store.activateProfile(); store.directories = ["piagent": root.path, "pi": root.path]; store.selected = [.pi, .piagent]
+        store.restore(.pi)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: binding.path))
+        XCTAssertEqual(store.selected, [.piagent], "The two company files are independent, unlike the shared direct-key Pi folder")
     }
     @MainActor func testChangedDirectoryAndSelectionInvalidateOldTargetResults() async throws {
         let f = try SyncFixture(); defer { f.clean() }
