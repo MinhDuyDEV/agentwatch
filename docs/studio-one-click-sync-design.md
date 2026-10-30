@@ -42,14 +42,16 @@ A company key never leaves Agent Watch, so Pi gets a pointer to the broker, not 
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | `1`; a consumer refuses a higher value |
+| `schema_version` | `1`, frozen: fields are never renamed or removed, a change that is not purely additive becomes `2`. A consumer refuses a higher value |
 | `profile_id` | the 64-hex Agent Watch profile id; the `--profile` argument |
 | `origin` | the Studio origin the profile was connected to |
 | `broker` | absolute, symlink-resolved path of the Agent Watch helper |
-| `broker_sha256` | hex SHA-256 of that file; the consumer checks it before it spawns the broker |
+| `broker_sha256` | hex SHA-256 of that file. It detects a broker replaced by an app update. It is not a defence against tampering: it sits in the same file as `broker`, so whoever can write the file can write both |
 | `configuration_revision` | Studio client-config revision when the file was written. Informational: it can lag the live one until the next sync, so never compare it with the revision in the broker's `config` answer |
 
-A consumer runs `<broker> managed-broker --profile <profile_id>` and talks line-delimited JSON on stdio: `config`, then `start` (`operation_id`, `effort`, `task_class`) for a run grant, and sends inference to `origin` with the grant's `as_run_` token. `child`, `renew`, `recover` and `close` follow the same protocol as for Piagent. The file holds no key, device token or model; Piagent's `agent-watch-managed.json` is a separate file and is unchanged. Agent Watch rewrites the file on the usual sync (an app update changes `broker_sha256`), so a consumer that finds a hash mismatch waits for Agent Watch instead of spawning.
+A consumer runs `<broker> managed-broker --profile <profile_id>` and talks line-delimited JSON on stdio: `config`, then `start` (`operation_id`, `effort`, `task_class`) for a run grant, and sends inference to `origin` with the grant's `as_run_` token. `child`, `renew`, `recover` and `close` follow the same protocol as for Piagent. The file holds no key, device token or model; Piagent's `agent-watch-managed.json` is a separate file and is unchanged. Agent Watch rewrites the file on the usual sync (an app update changes `broker_sha256`), so a consumer that finds a hash mismatch waits for Agent Watch instead of spawning. Agent Watch checks the pinned broker every five seconds (as it does for Piagent), so the wait after an update is short. The consumer hashes the file at `broker` and spawns exactly that same path, never a path it resolves again (a name looked up on `PATH`, or a symlink followed twice), so the binary it checked is the binary it runs.
+
+Any process running as this user can read the file and spawn the broker, which hands out company `as_run_` tokens without a prompt; that is also true of Piagent today. A Pi extension, third-party ones included, therefore gets the same access as the member. The limits are Studio's: the role and model grant of the key, its quota, the two-minute run lease and revocation of the key.
 
 The broker reads the key without any prompt. After an Agent Watch update macOS may have to approve the Keychain item again, and `config` then answers `permission_denied`, the same as for an unknown profile. When `config` is refused, run `<broker> managed-authorize --profile <profile_id>` in the foreground (exit 0: allowed, 67: not a saved company key, 77: the Keychain did not release the key) and retry once.
 

@@ -54,7 +54,7 @@ struct StudioToolsTab: View {
             if studio.profile?.credentialMode == .managed {
                 SectionLabel(text: "Harness công ty")
                 Text("agent-watch-auto").font(ClaudeFont.body(13))
-                Text("Main agent và các subagent (khảo sát, nghiên cứu, xác minh, kiểm tra) mà Harness của team bật. Thinking chọn trong Piagent.")
+                Text("Main agent và các subagent (khảo sát, nghiên cứu, xác minh, kiểm tra) mà Harness của team bật. Thinking chọn trong Pi hoặc Piagent.")
                     .font(ClaudeFont.body(11.5)).foregroundStyle(Claude.textMuted)
             } else { switch studio.snapshot?.models {
             case .available(let list):

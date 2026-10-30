@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import AgentWatchCore
 
 private actor ManagedTransport: StudioHTTPTransport {
@@ -399,6 +400,24 @@ private actor ManagedTransport: StudioHTTPTransport {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("agent-watch-managed.json").path))
         let direct = try StudioProfile(origin: profile.origin, id: String(repeating: "a", count: 64))
         XCTAssertThrowsError(try StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: direct, manifest: manifest, helper: helper))
+    }
+    /// An app update replaces the broker the Pi binding pins: the binding is
+    /// stale at once (the five-second watch resyncs), and the rewrite pins the new hash.
+    func testPiBindingGoesStaleWhenAnAppUpdateReplacesTheBroker() throws {
+        let (_, _, _, _, helper, dir) = try managedRuntime()
+        XCTAssertNil(StudioManagedConfiguration.studioBindingStaleFingerprint(directory: dir), "no binding, nothing to resync")
+        let (profile, manifest) = try configuration()
+        let receipt = StudioManagedConfiguration.studioReceiptURL(directory: dir)
+        addTeardownBlock { try? FileManager.default.removeItem(at: receipt) }
+        try StudioClientConfiguration.apply(StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: profile, manifest: manifest, helper: helper), receipt: receipt)
+        XCTAssertNil(StudioManagedConfiguration.studioBindingStaleFingerprint(directory: dir))
+        Thread.sleep(forTimeInterval: 1.1)
+        try Data("#!/bin/sh\necho next-watch\n".utf8).write(to: helper)
+        XCTAssertNotNil(StudioManagedConfiguration.studioBindingStaleFingerprint(directory: dir), "a replaced broker makes the Pi binding stale")
+        try StudioClientConfiguration.apply(StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: profile, manifest: manifest, helper: helper), receipt: receipt)
+        XCTAssertNil(StudioManagedConfiguration.studioBindingStaleFingerprint(directory: dir))
+        let written = try StudioClientConfiguration.object(StudioClientConfiguration.read(dir.appendingPathComponent("agent-watch-studio.json")))
+        XCTAssertEqual(written["broker_sha256"] as? String, SHA256.hash(data: try Data(contentsOf: helper)).map { String(format: "%02x", $0) }.joined())
     }
     func testCompanyKeySyncsPiAndPiagentInOneFolderEachOnItsOwn() async throws {
         @MainActor final class Key: StudioKeyStorage {

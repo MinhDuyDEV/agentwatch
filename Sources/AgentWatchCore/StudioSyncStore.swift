@@ -139,13 +139,15 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
                 if let self { await self.synchronizeSavedProfiles() }
                 // Every five minutes, or at once when a Piagent update replaced
                 // the launcher the company binding pins (`piagent studio` waits
-                // for it): checked every five seconds; the same stale state
+                // for it), or an Agent Watch update replaced the broker the Pi
+                // binding pins: checked every five seconds; the same stale state
                 // that a sync did not fix (Studio offline) is retried once a minute.
                 let due = Date().addingTimeInterval(TimeInterval(300 + Int.random(in: 0...20)))
                 while !Task.isCancelled, Date() < due {
                     try? await Task.sleep(for: .seconds(5))
                     guard let self else { return }
-                    guard let stale = StudioManagedConfiguration.staleFingerprint(directory: self.directory(.piagent)) else { continue }
+                    guard let stale = StudioManagedConfiguration.staleFingerprint(directory: self.directory(.piagent))
+                        ?? StudioManagedConfiguration.studioBindingStaleFingerprint(directory: self.directory(.pi)) else { continue }
                     if stale != lastStale || Date().timeIntervalSince(lastStaleSync) >= 60 { lastStale = stale; lastStaleSync = Date(); break }
                 }
             }
@@ -232,7 +234,7 @@ public struct StudioSyncResult: Codable, Identifiable, Sendable {
                             let plan = try StudioManagedConfiguration.prepareStudioBinding(directory: dir, connection: profile, manifest: manifest, helper: helper)
                             try StudioClientConfiguration.apply(plan, receipt: receipt)
                             revisions[physical] = manifest.revision
-                            let result = StudioSyncResult(target: target, count: 1, message: "agent-watch-studio.json · đã ghi binding Harness.", success: true)
+                            let result = StudioSyncResult(target: target, count: 0, message: "agent-watch-studio.json · đã ghi binding Harness.", success: true)
                             next.append(result); completed[physical] = result; continue
                         }
                         guard target == .piagent else { throw StudioError.permissionDenied }

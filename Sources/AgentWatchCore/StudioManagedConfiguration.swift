@@ -134,7 +134,16 @@ public enum StudioManagedConfiguration {
         if binding.interpreterSHA256 != nodeHash || binding.entrypointSHA256 != entryHash {
             return (binding.interpreterSHA256 ?? "") + ":" + binding.entrypointSHA256
         }
-        // An Agent Watch update replaces the broker (this app) the binding pins.
+        return brokerFingerprint(object, file: file)
+    }
+    /// The same for the Pi binding of a company key: it pins only the broker.
+    public static func studioBindingStaleFingerprint(directory: URL) -> String? {
+        let file = directory.appendingPathComponent("agent-watch-studio.json")
+        guard let data = try? StudioClientConfiguration.read(file), let object = try? StudioClientConfiguration.object(data) else { return nil }
+        return brokerFingerprint(object, file: file)
+    }
+    private static func brokerFingerprint(_ object: [String: Any], file: URL) -> String? {
+        // An Agent Watch update replaces the broker (this app) a binding pins.
         // Hash it only when it is newer than the binding: a cheap check every few seconds.
         guard let broker = object["broker"] as? String, let brokerHash = object["broker_sha256"] as? String else { return "unreadable" }
         // ctime: when the app was moved into place (Sparkle keeps the build's mtime).
