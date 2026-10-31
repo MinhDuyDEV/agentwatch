@@ -251,7 +251,7 @@ public struct StudioManagedClient: Sendable {
         guard let run = root ?? (whole ? unconfirmed : nil) else { return }
         guard whole || grants[key] != nil else { throw StudioError.permissionDenied }
         var body: [String: StudioJSONValue] = ["role": .string(role)]
-        if !whole, slot > 1 || (manifest.helperSlots ?? 1) >= 2 { body["slot"] = .number(Double(slot)) }
+        if !whole, (manifest.helperSlots ?? 1) >= 2 { body["slot"] = .number(Double(slot)) }
         if let process {
             guard whole, StudioProcessReport.valid(process, versions: manifest.processVersions ?? [1]) else { throw StudioError.invalidResponse }
             if manifest.harness?.configuration.workflow != nil { body["process"] = .object(process) }

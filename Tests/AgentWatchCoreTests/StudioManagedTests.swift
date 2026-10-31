@@ -262,8 +262,9 @@ private actor ManagedTransport: StudioHTTPTransport {
         XCTAssertTrue(sent[2].url?.path.hasSuffix("/close") == true)
     }
     /// Up to three grants of one helper role at once: slot 1 keeps the role's
-    /// key and the old body; a slot past the first names itself and needs a
-    /// Studio that offers that many; closing one slot keeps the others.
+    /// key and opens with the old body; a slot past the first names itself and
+    /// needs a Studio that offers that many; closing names the slot and keeps
+    /// the others.
     func testHelperSlotsHoldSeveralGrantsOfOneRole() async throws {
         let (profile, base) = try configuration()
         var manifest = base; manifest.helperSlots = 3
